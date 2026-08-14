@@ -4,6 +4,8 @@ name: Build KernelSU KO for GKI 6.6.77
 # 原因：默认 ddk-min:android15-6.6 是 LTS 最新（6.6.127），结构体布局与
 # 设备定制 6.6.77 不一致，导致 kernelsu_init 崩溃重启。本 workflow 拉取
 # GKI tag android15-6.6.77_r00 源码自行 modules_prepare 后编译。
+#
+# VERIFY-MARKER-20260814: 验证 keep_permissive/disable_syscall_hooks/init_stage 三参数。
 
 on:
   workflow_dispatch:
