@@ -1,0 +1,68 @@
+name: Build ksud with 6.6.77 KO
+# 专用于构建内嵌 GKI 6.6.77 kernelsu.ko 的 ksud（aarch64）。
+# 6.6.77 KO 已提交在 userspace/ksud/bin/aarch64/android15-6.6_kernelsu.ko，
+# 本 workflow 不覆盖该文件，直接编译 ksud 将其 rust-embed 嵌入。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "dev" ]
+    paths:
+      - '.github/workflows/build-ksud-6677.yml'
+      - 'userspace/ksud/bin/aarch64/android15-6.6_kernelsu.ko'
+
+jobs:
+  build-ksud-6677:
+    name: Build aarch64 ksud (6.6.77)
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Download 6.6.77 KO from build-lkm-6677
+      uses: actions/download-artifact@v7
+      with:
+        name: aarch64-android15-6.6-lkm
+        run-id: 31783867317
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Verify 6.6.77 KO present
+      run: |
+        ls -la android15-6.6_kernelsu.ko
+        strings android15-6.6_kernelsu.ko | grep -i "vermagic=" | head
+        cp -f android15-6.6_kernelsu.ko userspace/ksud/bin/aarch64/android15-6.6_kernelsu.ko
+
+    - name: Setup rustup
+      run: |
+        rustup update stable
+        rustup target add aarch64-linux-android
+    - uses: Swatinem/rust-cache@v2
+      with:
+        workspaces: userspace/ksud
+        cache-targets: false
+        cache-bin: false
+
+    - name: Install cross
+      run: |
+        RUSTFLAGS="" cargo install cross --git https://github.com/cross-rs/cross --rev 66845c1
+
+    - name: Assemble LKM bootstrap
+      run: |
+        clang --target=aarch64-linux-gnu -c -nostdlib \
+          -o userspace/ksud/.lkm_image_bootstrap.o \
+          userspace/ksud/src/lkm_image_bootstrap.S
+
+    - name: Build ksud
+      env:
+        BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android: >
+          --sysroot=$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot
+          -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include/aarch64-linux-android
+          -I$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include
+      run: CROSS_NO_WARNINGS=0 cross build --target aarch64-linux-android --release --manifest-path ./userspace/ksud/Cargo.toml
+
+    - name: Upload ksud artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: ksud-aarch64-linux-android-6677
+        path: userspace/ksud/target/**/release/ksud*

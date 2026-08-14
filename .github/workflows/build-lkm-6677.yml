@@ -1,0 +1,113 @@
+name: Build KernelSU KO for GKI 6.6.77
+
+# 专用于编译匹配设备内核 6.6.77 (android15-8) 的 kernelsu.ko。
+# 原因：默认 ddk-min:android15-6.6 是 LTS 最新（6.6.127），结构体布局与
+# 设备定制 6.6.77 不一致，导致 kernelsu_init 崩溃重启。本 workflow 拉取
+# GKI tag android15-6.6.77_r00 源码自行 modules_prepare 后编译。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "dev" ]
+    paths:
+      - '.github/workflows/build-lkm-6677.yml'
+
+jobs:
+  build-ko-6677:
+    name: Build kernelsu.ko for android15-6.6.77
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ylarod/ddk-min:android15-6.6-20260313
+      options: --privileged
+
+    steps:
+    - name: Checkout source code
+      uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+
+    - name: Prepare 6.6.77 kernel source (gki_defconfig + modules_prepare)
+      run: |
+        set -e
+        git config --global --add safe.directory /__w/KernelSU-Next/KernelSU-Next
+
+        KMI=android15-6.6
+        SRC=/opt/ddk/src/$KMI
+        KDIR=/opt/ddk/kdir/$KMI
+
+        echo "=== Replacing kernel source with GKI 6.6.77 ==="
+        rm -rf "$SRC"
+        git clone --branch android15-6.6.77_r00 --depth 1 \
+          https://android.googlesource.com/kernel/common "$SRC"
+
+        # 与 build-ddk.py 相同的 modpost 懒加载补丁（KSU 注入导出符号所需）
+        # 用 & 引用整行匹配，避免 GNU sed 对无效 \1 报错
+        MODPOST="$SRC/scripts/mod/modpost.c"
+        sed -i 's/check_exports(mod);/\/\/check_exports(mod);/' "$MODPOST"
+        sed -i 's/s->module = exp->module;/\/\/s->module = exp->module;/' "$MODPOST"
+
+        echo "=== Rebuild KDIR (modules_prepare) for 6.6.77 ==="
+        rm -rf "$KDIR"
+        mkdir -p "$KDIR"
+        cd "$SRC"
+        export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1
+        make O="$KDIR" gki_defconfig
+        make O="$KDIR" modules_prepare -j$(nproc)
+
+        # 复制 selinux 头文件（Kbuild 中 ccflags 依赖）
+        SELINUX_PATH=security/selinux
+        mkdir -p "$KDIR/$SELINUX_PATH"
+        cp "$SRC/$SELINUX_PATH"/*.h "$KDIR/$SELINUX_PATH" 2>/dev/null || true
+
+        # flask.h / av_permissions.h 是构建期生成的头文件，modules_prepare 不生成它们，
+        # 但 KSU 的 objsec.h 依赖 flask.h。genheaders 源码在 scripts/selinux/genheaders/。
+        echo "=== Generating selinux flask.h + av_permissions.h via genheaders ==="
+        mkdir -p "$KDIR/security/selinux"
+        gcc -I"$SRC/security/selinux/include" \
+            -o /tmp/genheaders "$SRC/scripts/selinux/genheaders/genheaders.c"
+        /tmp/genheaders \
+            "$KDIR/security/selinux/flask.h" \
+            "$KDIR/security/selinux/av_permissions.h"
+        ls -la "$KDIR/security/selinux/"
+        head -5 "$KDIR/security/selinux/flask.h"
+
+        echo "=== KDIR prepared ==="
+        ls -la "$KDIR" | head -20
+        ls -la "$KDIR/security/selinux" | head -20
+
+    - name: Build kernelsu.ko against 6.6.77
+      run: |
+        set -e
+        KMI=android15-6.6
+        SRC=/opt/ddk/src/$KMI
+        KDIR=/opt/ddk/kdir/$KMI
+        MDIR="$GITHUB_WORKSPACE/kernel"
+        echo "=== GITHUB_WORKSPACE=$GITHUB_WORKSPACE ==="
+        echo "=== MDIR=$MDIR ==="
+        ls -la "$GITHUB_WORKSPACE" | head -20
+        ls -la "$MDIR" | head -20
+
+        export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1
+        export KDIR="$KDIR"
+
+        echo "=== Building kernelsu.ko for 6.6.77 ==="
+        make -C "$KDIR" M="$MDIR" src="$MDIR" modules CONFIG_KSU=m -j$(nproc)
+
+        echo "=== Build completed ==="
+        ls -la "$MDIR/kernelsu.ko"
+
+        OUT_DIR=/github/workspace/out/aarch64
+        mkdir -p "$OUT_DIR"
+        cp "$MDIR/kernelsu.ko" "$OUT_DIR/android15-6.6_kernelsu.ko"
+        (cd "$OUT_DIR" && llvm-strip -d android15-6.6_kernelsu.ko)
+        ls -la "$OUT_DIR"
+
+        echo "=== Show vermagic ==="
+        modinfo "$MDIR/kernelsu.ko" 2>/dev/null | grep -i vermagic || \
+          strings "$MDIR/kernelsu.ko" | grep -i "vermagic" | head
+
+    - name: Upload kernelsu.ko artifact
+      uses: actions/upload-artifact@v7
+      with:
+        name: aarch64-android15-6.6-lkm
+        path: /github/workspace/out/aarch64/android15-6.6_kernelsu.ko

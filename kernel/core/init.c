@@ -83,6 +83,15 @@ module_param(allow_shell, bool, 0);
 bool ksu_no_custom_rc = false;
 module_param_named(norc, ksu_no_custom_rc, bool, 0);
 
+bool keep_permissive = false;
+module_param(keep_permissive, bool, 0);
+
+bool disable_syscall_hooks = false;
+module_param(disable_syscall_hooks, bool, 0);
+
+int init_stage = 0;
+module_param(init_stage, int, 0);
+
 int __init kernelsu_init(void)
 {
 #if defined(__x86_64__) && !defined(CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER)
