@@ -145,11 +145,15 @@ void setup_ksu_cred(void)
     }
 }
 
+/*
+ * Never change SELinux enforcement from the module.  Guests booted with
+ * selinux=0 (BlueStacks Air) have no policy loaded, so flipping enforcing
+ * makes Android init's first-stage security_setenforce(false) fail with
+ * EPERM and reboot the VM.  Real devices already come up enforcing.
+ */
 void setenforce(bool enforce)
 {
-#ifdef CONFIG_SECURITY_SELINUX_DEVELOP
-    selinux_state.enforcing = enforce;
-#endif
+    (void)enforce;
 }
 
 /* True when SELinux was disabled at boot (e.g. BlueStacks Air). Forcing
