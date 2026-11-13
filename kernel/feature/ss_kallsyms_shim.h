@@ -17,6 +17,7 @@
 
 #include "infra/symbol_resolver.h"
 #include "klog.h"
+#include <asm-generic/errno-base.h>
 
 #define KSU_SS_SHIM_DECL(ret, name, args...)                                   \
 	static ret (*ksu_ss_p_##name)(args);                                   \

@@ -2,6 +2,11 @@
 #include "ss/constraint.h"
 #include "ss/ebitmap.h"
 #include "ss/hashtab.h"
+// Route non-exported SELinux ss internals through kallsyms (LKM on custom
+// kernels). Must come BEFORE ss/policydb.h which pulls in sidtab.h /
+// context.h / mls_types.h static inline helpers that reference
+// kernel-internal symbols directly.
+#include "../feature/ss_kallsyms_shim.h"
 #include "ss/policydb.h"
 #include "ss/services.h"
 #include <linux/gfp.h>
@@ -14,8 +19,6 @@
 #include "sepolicy.h"
 #include "klog.h" // IWYU pragma: keep
 #include "ss/symtab.h"
-// Route non-exported SELinux ss internals through kallsyms (LKM on custom kernels).
-#include "../feature/ss_kallsyms_shim.h"
 
 #define KSU_SUPPORT_ADD_TYPE
 
