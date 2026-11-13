@@ -1,0 +1,119 @@
+name: Build kernelsu.ko for BlueStacks Air (GKI 5.15.137)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ko:
+    name: kernelsu.ko @ android13-5.15.137
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/ylarod/ddk-min:android13-5.15-20260828
+      options: --privileged
+
+    steps:
+    - name: Checkout KernelSU-Next source
+      uses: actions/checkout@v4
+
+    - name: Fetch GKI 5.15.137 source and prepare KDIR
+      run: |
+        set -e
+        KMI=android13-5.15
+        SRC=/opt/ddk/src/$KMI
+        KDIR=/opt/ddk/kdir/$KMI
+        LOCALVER="-00001-gfdae1bb0ce90"
+
+        echo "=== Replacing ddk kernel source with GKI tag android13-5.15.137_r00 ==="
+        rm -rf "$SRC" "$KDIR"
+        git clone --depth 1 --branch android13-5.15.137_r00 \
+          https://android.googlesource.com/kernel/common "$SRC"
+
+        mkdir -p "$KDIR"
+        cd "$SRC"
+        export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1
+
+        make O="$KDIR" gki_defconfig
+
+        scripts/config --file "$KDIR/.config" \
+          -d LTO_CLANG -e LTO_NONE -d LTO_CLANG_THIN -d LTO_CLANG_FULL \
+          -d LOCALVERSION_AUTO -e MODULES -e KPROBES -e MODVERSIONS \
+          --set-str LOCALVERSION "$LOCALVER"
+
+        make O="$KDIR" modules_prepare -j"$(nproc)"
+
+        echo "=== selinux headers (flask.h/av_permissions.h) ==="
+        mkdir -p "$KDIR/security/selinux"
+        cp "$SRC/security/selinux"/*.h "$KDIR/security/selinux/" 2>/dev/null || true
+        gcc -I"$SRC/security/selinux/include" \
+            -o /tmp/genheaders "$SRC/scripts/selinux/genheaders/genheaders.c"
+        /tmp/genheaders \
+            "$KDIR/security/selinux/flask.h" \
+            "$KDIR/security/selinux/av_permissions.h"
+
+        grep -E "^CONFIG_LOCALVERSION=|^CONFIG_MODVERSIONS=" "$KDIR/.config" || true
+
+    - name: Build kernelsu.ko
+      run: |
+        set -e
+        KMI=android13-5.15
+        KDIR=/opt/ddk/kdir/$KMI
+        MDIR="$GITHUB_WORKSPACE/kernel"
+
+        export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1
+        make -C "$KDIR" M="$MDIR" src="$MDIR" modules CONFIG_KSU=m -j"$(nproc)"
+
+        ls -la "$MDIR/kernelsu.ko"
+        echo "=== vermagic ==="
+        strings "$MDIR/kernelsu.ko" | grep -E "^vermagic=" || true
+
+        mkdir -p "$GITHUB_WORKSPACE/out"
+        cp "$MDIR/kernelsu.ko" "$GITHUB_WORKSPACE/out/kernelsu.ko"
+
+    - name: Neutralize __versions (bypass MODVERSIONS CRC check)
+      run: |
+        set -e
+        python3 - "$GITHUB_WORKSPACE/out/kernelsu.ko" <<'PY'
+        import struct, sys
+        p = sys.argv[1]
+        d = bytearray(open(p, "rb").read())
+        assert d[:4] == b"\x7fELF", "not ELF"
+        assert d[4] == 2, "not ELF64"
+        e_shoff  = struct.unpack_from("<Q", d, 0x28)[0]
+        e_shent  = struct.unpack_from("<H", d, 0x3a)[0]
+        e_shnum  = struct.unpack_from("<H", d, 0x3c)[0]
+        e_shstr  = struct.unpack_from("<H", d, 0x3e)[0]
+
+        def sh(i):
+            return struct.unpack_from("<IIQQQQIIQQ", d, e_shoff + i * e_shent)
+
+        stroff = sh(e_shstr)[4]
+        def secname(i):
+            o = sh(i)[0]
+            end = d.index(b"\x00", stroff + o)
+            return d[stroff + o:end].decode()
+
+        idx = next((i for i in range(e_shnum) if secname(i) == "__versions"), None)
+        if idx is None:
+            print("__versions not found -> add empty/dummy section via objcopy")
+            open("/tmp/vers.bin", "wb").write(b"ksu_bypass\x00" + b"\x00" * 54 + b"\x00\x00\x00\x00")
+            import subprocess
+            subprocess.check_call(["objcopy", "--add-section", "__versions=/tmp/vers.bin",
+                                   "--set-section-flags", "__versions=alloc,load,data,readonly", p])
+        else:
+            _, _, _, off, size = sh(idx)[:5]
+            n = size // 68
+            print(f"__versions: offset={off} size={size} entries={n}")
+            name = b"ksu_bypass\x00" + b"\x00" * 54
+            for i in range(n):
+                d[off + i * 68: off + i * 68 + 64] = name
+            open(p, "wb").write(d)
+            print("all CRC entry names neutralized")
+        PY
+        echo "=== final vermagic ==="
+        strings "$GITHUB_WORKSPACE/out/kernelsu.ko" | grep -E "^vermagic=" || true
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernelsu-5.15.137-bst
+        path: ${{ github.workspace }}/out/kernelsu.ko
