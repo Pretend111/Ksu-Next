@@ -2,6 +2,8 @@ name: Build kernelsu.ko for BlueStacks Air (GKI 5.15.137)
 
 on:
   workflow_dispatch:
+  push:
+    branches: [ bst-air-lkm ]
 
 jobs:
   build-ko:
