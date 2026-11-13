@@ -21,6 +21,8 @@
 #include "manager/manager_identity.h"
 
 #include "sulog/event.h"
+#include "hook/syscall_hook.h"
+#include <asm/syscall.h>
 
 uint32_t ksuver_override = 0;
 
@@ -268,6 +270,32 @@ static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
     return 0;
 }
 
+/*
+ * kprobes are unavailable on non-GKI kernels (CONFIG_KPROBES=n, e.g.
+ * BlueStacks Air).  Provide the same reboot-magic bootstrap through a direct
+ * syscall-table hook so ksud can install its driver fd.
+ */
+static syscall_fn_t ksu_orig_reboot_handler;
+
+static long ksu_reboot_table_hook(const struct pt_regs *regs)
+{
+    int magic1 = (int)PT_REGS_SYSCALL_PARM1(regs);
+    int magic2 = (int)PT_REGS_PARM2(regs);
+    unsigned long arg4 = (unsigned long)PT_REGS_SYSCALL_PARM4(regs);
+
+    if (magic1 == KSU_INSTALL_MAGIC1 && magic2 == KSU_INSTALL_MAGIC2) {
+        int fd = ksu_install_fd();
+        pr_info("[%d] install ksu fd via reboot magic: %d\n", current->pid, fd);
+        if (fd >= 0 && copy_to_user((int __user *)arg4, &fd, sizeof(fd))) {
+            pr_err("install ksu fd reply err\n");
+            ksu_close_fd(fd);
+        }
+        return 0;
+    }
+
+    return ksu_orig_reboot_handler ? ksu_orig_reboot_handler(regs) : -ENOSYS;
+}
+
 static struct kprobe reboot_kp = {
     .symbol_name = REBOOT_SYMBOL,
     .pre_handler = reboot_handler_pre,
@@ -281,7 +309,9 @@ void __init ksu_supercalls_init(void)
 
     rc = register_kprobe(&reboot_kp);
     if (rc) {
-        pr_err("reboot kprobe failed: %d\n", rc);
+        pr_info("reboot kprobe failed: %d, using syscall-table hook\n", rc);
+        ksu_syscall_table_hook(__NR_reboot, ksu_reboot_table_hook,
+                               &ksu_orig_reboot_handler);
     } else {
         pr_info("reboot kprobe registered successfully\n");
     }
@@ -289,6 +319,8 @@ void __init ksu_supercalls_init(void)
 
 void __exit ksu_supercalls_exit(void)
 {
+    if (ksu_orig_reboot_handler)
+        ksu_syscall_table_unhook(__NR_reboot);
     unregister_kprobe(&reboot_kp);
     ksu_supercall_cleanup_state();
 }
