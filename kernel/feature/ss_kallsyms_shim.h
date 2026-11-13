@@ -19,6 +19,16 @@
 #include "klog.h"
 #include <asm-generic/errno-base.h>
 
+struct context;
+struct sidtab;
+struct sidtab_entry;
+struct policydb;
+struct ebitmap;
+struct avtab;
+struct avtab_key;
+struct av_decision;
+struct extended_perms;
+
 #define KSU_SS_SHIM_DECL(ret, name, args...)                                   \
 	static ret (*ksu_ss_p_##name)(args);                                   \
 	static bool ksu_ss_tried_##name;                                       \
