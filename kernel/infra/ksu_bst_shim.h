@@ -18,6 +18,7 @@
 #include <linux/types.h>
 #include <linux/uidgid.h>
 #include <asm/fixmap.h>
+#include <asm/pgtable-types.h>
 #include <linux/errno.h>
 #include <asm-generic/errno-base.h>
 #include "infra/symbol_resolver.h"
@@ -233,7 +234,7 @@ KSU_BST_DECL(long, __arm64_sys_setns, const struct pt_regs *regs)
 }
 
 /* ============ arch / mem ============ */
-KSU_BST_DECL(void, __set_fixmap, int idx, phys_addr_t phys, u64 flags)
+KSU_BST_DECL(void, __set_fixmap, int idx, phys_addr_t phys, pgprot_t flags)
 {
 	KSU_BST_ALIAS(__set_fixmap);
 	if (ksu_bst_p___set_fixmap)
