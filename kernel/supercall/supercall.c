@@ -90,7 +90,13 @@ static int ksu_install_fd_with_permissions(unsigned int fd_flags, unsigned long 
 
 int ksu_install_fd(void)
 {
-    return ksu_install_fd_with_permissions(O_CLOEXEC, 0);
+    /*
+     * Deliberately NOT O_CLOEXEC: the manager drives ksud (metamodule install,
+     * module list, su sessions) by exec'ing it, and ksud discovers the driver
+     * by scanning /proc/self/fd for "[ksu_driver]".  With O_CLOEXEC every
+     * child came up empty ("could not retrieve kernelsu driver fd").
+     */
+    return ksu_install_fd_with_permissions(0, 0);
 }
 
 int ksu_install_su_fd(void)
