@@ -209,4 +209,7 @@ void __init ksu_init_symbol_resolver()
         pr_warn("kallsyms_on_each_match_symbol not found!\n");
     }
 #endif
+    /* Populate the same-name selinux_blob_sizes copy before any inline
+     * helper (objsec.h selinux_cred/selinux_file/...) runs. */
+    ksu_bst_sync_data_symbols();
 }

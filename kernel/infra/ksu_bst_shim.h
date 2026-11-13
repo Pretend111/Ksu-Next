@@ -59,12 +59,17 @@ static inline unsigned long ksu_bst_kln(const char *name)
 
 KSU_BST_DATA(struct mm_struct, init_mm)
 KSU_BST_DATA(struct selinux_state, selinux_state)
-KSU_BST_DATA(struct selinux_blob_sizes, selinux_blob_sizes)
+KSU_BST_DATA(struct lsm_blob_sizes, selinux_blob_sizes)
 KSU_BST_DATA(struct proc_ns_operations, mntns_operations)
 KSU_BST_DATA(struct tracepoint, __tracepoint_sys_enter)
 KSU_BST_DATA(struct rw_semaphore, uts_sem)
 
-/* Data symbols are accessed via ksu_bst_ptr_*() at rewritten call sites. */
+/* Data symbols are accessed via ksu_bst_ptr_*() at rewritten call sites.
+ * selinux_blob_sizes is special: selinux's objsec.h static inline helpers
+ * bind to the symbol name directly, so infra/ksu_bst_shim.c defines a
+ * same-name copy synced from the kernel at init (ksu_bst_sync_data_symbols,
+ * blob offsets are boot-constant). */
+void ksu_bst_sync_data_symbols(void);
 
 /* ============ wrapper prototypes (same names as kernel symbols) ============ */
 struct mm_struct;

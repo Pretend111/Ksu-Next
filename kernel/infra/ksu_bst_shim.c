@@ -22,6 +22,7 @@
 #include <linux/proc_ns.h>
 #include <linux/tracepoint.h>
 #include <linux/security.h>
+#include <linux/lsm_hooks.h>
 #include <linux/utsname.h>
 #include <linux/pid.h>
 #include <asm/fixmap.h>
@@ -31,6 +32,21 @@
 #include "infra/symbol_resolver.h"
 #include "infra/ksu_bst_shim.h"
 #include "klog.h"
+
+/* Same-name copy of the kernel's selinux_blob_sizes; objsec.h inline
+ * helpers reference the symbol directly and cannot be macro-rewritten. */
+struct lsm_blob_sizes selinux_blob_sizes;
+
+void ksu_bst_sync_data_symbols(void)
+{
+	struct lsm_blob_sizes *real =
+		(struct lsm_blob_sizes *)find_kernel_symbol_exact("selinux_blob_sizes");
+	if (real) {
+		selinux_blob_sizes = *real;
+	} else {
+		pr_warn_once("KernelSU: bst shim: selinux_blob_sizes not found\n");
+	}
+}
 
 static void *bst_sym(const char *name, void **cache, bool *tried)
 {
