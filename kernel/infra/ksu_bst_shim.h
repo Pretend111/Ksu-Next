@@ -21,6 +21,9 @@
 #include <linux/types.h>
 #include <linux/uidgid.h>
 #include <asm/pgtable-types.h>
+#include <linux/pid.h>
+#include <linux/task_work.h>
+#include <asm/fixmap.h>
 #include "infra/symbol_resolver.h"
 #include "klog.h"
 
@@ -96,6 +99,8 @@ struct symtab;
 struct ebitmap;
 struct filename_trans_key;
 struct filename_trans_datum;
+struct common_audit_data;
+struct callback_head;
 
 int path_umount(struct path *path, int flags);
 int path_mount(const char *dev_name, struct path *path, const char *type_page,
@@ -104,18 +109,18 @@ int ksys_unshare(unsigned long unshare_flags);
 void set_fs_pwd(struct fs_struct *fs, const struct path *path);
 int ns_get_path(struct path *path, struct task_struct *task,
 		const struct proc_ns_operations *ns_ops);
-void change_pid(struct task_struct *task, int type, struct pid *pid);
+void change_pid(struct task_struct *task, enum pid_type type, struct pid *pid);
 bool current_is_single_threaded(void);
 int task_work_add(struct task_struct *task, struct callback_head *twork,
-		  int mode);
+		  enum task_work_notify_mode mode);
 struct user_struct *alloc_uid(kuid_t uid);
 int set_cred_ucounts(struct cred *cred);
 void seccomp_filter_release(struct task_struct *tsk);
 void ext4_unregister_sysfs(struct super_block *sb);
 
-unsigned long kallsyms_lookup(unsigned long addr, unsigned long *symbolsize,
-			      unsigned long *offset, char **modname,
-			      char *namebuf);
+const char *kallsyms_lookup(unsigned long addr, unsigned long *symbolsize,
+			    unsigned long *offset, char **modname,
+			    char *namebuf);
 int kallsyms_lookup_size_offset(unsigned long addr, unsigned long *symbolsize,
 				unsigned long *offset);
 unsigned long kallsyms_lookup_name(const char *name);
@@ -123,7 +128,7 @@ unsigned long kallsyms_lookup_name(const char *name);
 long __arm64_sys_close(const struct pt_regs *regs);
 long __arm64_sys_setns(const struct pt_regs *regs);
 
-void __set_fixmap(int idx, phys_addr_t phys, pgprot_t flags);
+void __set_fixmap(enum fixed_addresses idx, phys_addr_t phys, pgprot_t flags);
 long copy_to_kernel_nofault(void *dst, const void *src, size_t size);
 long strncpy_from_user_nofault(char *dst, const void __user *src, long count);
 void dcache_clean_inval_poc(unsigned long start, unsigned long end);
@@ -166,8 +171,5 @@ int __hashtab_insert(struct hashtab *h, struct hashtab_node **dst, void *key,
 int symtab_insert(struct symtab *s, char *name, void *datum);
 void *symtab_search(struct symtab *s, const char *name);
 void ebitmap_destroy(struct ebitmap *e);
-
-struct common_audit_data;
-struct callback_head;
 
 #endif /* __KSU_BST_SHIM_H */

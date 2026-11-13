@@ -85,12 +85,13 @@ BST_DECL(int, ns_get_path, struct path *path, struct task_struct *task,
 		  const struct proc_ns_operations *) = BST_FN(ns_get_path);
 	return fn ? fn(path, task, ns_ops) : -ENOENT;
 }
-BST_DECL(void, change_pid, struct task_struct *task, int type, struct pid *pid)
+BST_DECL(void, change_pid, struct task_struct *task, enum pid_type type,
+	 struct pid *pid)
 {
 	void (*fn)(struct task_struct *, enum pid_type, struct pid *) =
 		BST_FN(change_pid);
 	if (fn)
-		fn(task, (enum pid_type)type, pid);
+		fn(task, type, pid);
 }
 BST_DECL(bool, current_is_single_threaded, void)
 {
@@ -98,11 +99,11 @@ BST_DECL(bool, current_is_single_threaded, void)
 	return fn ? fn() : false;
 }
 BST_DECL(int, task_work_add, struct task_struct *task,
-	 struct callback_head *twork, int mode)
+	 struct callback_head *twork, enum task_work_notify_mode mode)
 {
 	int (*fn)(struct task_struct *, struct callback_head *,
 		  enum task_work_notify_mode) = BST_FN(task_work_add);
-	return fn ? fn(task, twork, (enum task_work_notify_mode)mode) : -ENOENT;
+	return fn ? fn(task, twork, mode) : -ENOENT;
 }
 BST_DECL(struct user_struct *, alloc_uid, kuid_t uid)
 {
@@ -128,13 +129,13 @@ BST_DECL(void, ext4_unregister_sysfs, struct super_block *sb)
 }
 
 /* ============ kallsyms ============ */
-BST_DECL(unsigned long, kallsyms_lookup, unsigned long addr,
+BST_DECL(const char *, kallsyms_lookup, unsigned long addr,
 	 unsigned long *symbolsize, unsigned long *offset, char **modname,
 	 char *namebuf)
 {
-	unsigned long (*fn)(unsigned long, unsigned long *, unsigned long *,
-			    char **, char *) = BST_FN(kallsyms_lookup);
-	return fn ? fn(addr, symbolsize, offset, modname, namebuf) : 0;
+	const char *(*fn)(unsigned long, unsigned long *, unsigned long *,
+			  char **, char *) = BST_FN(kallsyms_lookup);
+	return fn ? fn(addr, symbolsize, offset, modname, namebuf) : NULL;
 }
 BST_DECL(int, kallsyms_lookup_size_offset, unsigned long addr,
 	 unsigned long *symbolsize, unsigned long *offset)
@@ -162,12 +163,13 @@ BST_DECL(long, __arm64_sys_setns, const struct pt_regs *regs)
 }
 
 /* ============ arch / mem ============ */
-BST_DECL(void, __set_fixmap, int idx, phys_addr_t phys, pgprot_t flags)
+BST_DECL(void, __set_fixmap, enum fixed_addresses idx, phys_addr_t phys,
+	 pgprot_t flags)
 {
 	void (*fn)(enum fixed_addresses, phys_addr_t, pgprot_t) =
 		BST_FN(__set_fixmap);
 	if (fn)
-		fn((enum fixed_addresses)idx, phys, flags);
+		fn(idx, phys, flags);
 }
 BST_DECL(long, copy_to_kernel_nofault, void *dst, const void *src, size_t size)
 {
