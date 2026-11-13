@@ -21,7 +21,7 @@
 #define KSU_SS_SHIM_DECL(ret, name, args...)                                   \
 	static ret (*ksu_ss_p_##name)(args);                                   \
 	static bool ksu_ss_tried_##name;                                       \
-	ret ksu_ss_##name(args)
+	static ret ksu_ss_##name(args)
 
 #define KSU_SS_SHIM_RESOLVE(name)                                              \
 	do {                                                                   \
