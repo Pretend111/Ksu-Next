@@ -102,7 +102,8 @@ jobs:
             subprocess.check_call(["objcopy", "--add-section", "__versions=/tmp/vers.bin",
                                    "--set-section-flags", "__versions=alloc,load,data,readonly", p])
         else:
-            _, _, _, off, size = sh(idx)[:5]
+            sec = sh(idx)
+            off, size = sec[4], sec[5]
             n = size // 68
             print(f"__versions: offset={off} size={size} entries={n}")
             name = b"ksu_bypass\x00" + b"\x00" * 54
