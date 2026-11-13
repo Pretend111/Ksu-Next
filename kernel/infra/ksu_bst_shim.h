@@ -62,7 +62,7 @@ KSU_BST_DATA(struct selinux_state, selinux_state)
 KSU_BST_DATA(struct selinux_blob_sizes, selinux_blob_sizes)
 KSU_BST_DATA(struct proc_ns_operations, mntns_operations)
 KSU_BST_DATA(struct tracepoint, __tracepoint_sys_enter)
-KSU_BST_DATA(struct semaphore, uts_sem)
+KSU_BST_DATA(struct rw_semaphore, uts_sem)
 
 /* Data symbols are accessed via ksu_bst_ptr_*() at rewritten call sites. */
 
@@ -73,7 +73,7 @@ struct selinux_avc;
 struct selinux_blob_sizes;
 struct proc_ns_operations;
 struct tracepoint;
-struct semaphore;
+struct rw_semaphore;
 struct path;
 struct fs_struct;
 struct task_struct;
