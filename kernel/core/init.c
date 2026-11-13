@@ -181,7 +181,7 @@ int __init kernelsu_init(void)
 
 		ksu_feature_apply_forced();
 
-		if (!getenforce()) {
+		if (!getenforce() && !is_selinux_disabled()) {
 			pr_info("Permissive SELinux, enforcing\n");
 			setenforce(true);
 		}

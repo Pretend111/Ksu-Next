@@ -19,6 +19,7 @@ void setup_selinux(const char *, struct cred *);
 void setenforce(bool);
 
 bool getenforce();
+bool is_selinux_disabled(void);
 
 void cache_sid(void);
 

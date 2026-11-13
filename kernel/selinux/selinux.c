@@ -152,6 +152,17 @@ void setenforce(bool enforce)
 #endif
 }
 
+/* True when SELinux was disabled at boot (e.g. BlueStacks Air). Forcing
+ * enforcing in that state makes Android's init die on setenforce(0). */
+bool is_selinux_disabled(void)
+{
+#ifdef CONFIG_SECURITY_SELINUX_DISABLE
+    return selinux_state.disabled;
+#else
+    return false;
+#endif
+}
+
 bool getenforce(void)
 {
 #ifdef CONFIG_SECURITY_SELINUX_DISABLE
