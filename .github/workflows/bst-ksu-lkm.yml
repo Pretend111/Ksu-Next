@@ -7,11 +7,15 @@ on:
 
 jobs:
   build-ko:
-    name: kernelsu.ko @ android13-5.15.137
+    name: kernelsu.ko @ 5.15.137-00001-gfdae1bb0ce90
     runs-on: ubuntu-latest
     container:
       image: ghcr.io/ylarod/ddk-min:android13-5.15-20260828
       options: --privileged
+
+    env:
+      LOCALVER: "-00001-gfdae1bb0ce90"
+      EXPECT_VERMAGIC: "5.15.137-00001-gfdae1bb0ce90 SMP preempt mod_unload modversions aarch64"
 
     steps:
     - name: Checkout KernelSU-Next source
@@ -23,32 +27,35 @@ jobs:
         KMI=android13-5.15
         SRC=/opt/ddk/src/$KMI
         KDIR=/opt/ddk/kdir/$KMI
-        LOCALVER="-00001-gfdae1bb0ce90"
 
-        echo "=== Replacing ddk kernel source with GKI tag android13-5.15.137_r00 ==="
         rm -rf "$SRC" "$KDIR"
         git clone --depth 1 --branch android13-5.15.137_r00 \
           https://android.googlesource.com/kernel/common "$SRC"
 
-        # Force a deterministic release string: no git suffix, no "+" dirty marker.
-        printf '#!/bin/sh\nexit 0\n' > "$SRC/scripts/setlocalversion"
+        # Deterministic release string: setlocalversion only echoes our suffix,
+        # so KERNELRELEASE becomes 5.15.137-00001-gfdae1bb0ce90 with no "+"/-dirty.
+        cat > "$SRC/scripts/setlocalversion" <<'SLV'
+        #!/bin/sh
+        printf '%s' "-00001-gfdae1bb0ce90"
+        SLV
         chmod +x "$SRC/scripts/setlocalversion"
-        git config --global --add safe.directory "$SRC" || true
 
         mkdir -p "$KDIR"
         cd "$SRC"
         export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1
 
         make O="$KDIR" gki_defconfig
-
         scripts/config --file "$KDIR/.config" \
           -d LTO_CLANG -e LTO_NONE -d LTO_CLANG_THIN -d LTO_CLANG_FULL \
-          -d LOCALVERSION_AUTO -e MODULES -e KPROBES -e MODVERSIONS \
-          --set-str LOCALVERSION "$LOCALVER"
+          -d LOCALVERSION_AUTO -e MODULES -e KPROBES -e MODVERSIONS
 
         make O="$KDIR" modules_prepare -j"$(nproc)"
 
-        echo "=== selinux headers (flask.h/av_permissions.h) ==="
+        echo "=== utsrelease ==="
+        cat "$KDIR/include/generated/utsrelease.h"
+        grep -q "5.15.137-00001-gfdae1bb0ce90" "$KDIR/include/generated/utsrelease.h" \
+          || { echo "UTS_RELEASE wrong"; exit 1; }
+
         mkdir -p "$KDIR/security/selinux"
         cp "$SRC/security/selinux"/*.h "$KDIR/security/selinux/" 2>/dev/null || true
         gcc -I"$SRC/security/selinux/include" \
@@ -57,21 +64,19 @@ jobs:
             "$KDIR/security/selinux/flask.h" \
             "$KDIR/security/selinux/av_permissions.h"
 
-        grep -E "^CONFIG_LOCALVERSION=|^CONFIG_MODVERSIONS=" "$KDIR/.config" || true
-
     - name: Build kernelsu.ko
       run: |
         set -e
-        KMI=android13-5.15
-        KDIR=/opt/ddk/kdir/$KMI
+        KDIR=/opt/ddk/kdir/android13-5.15
         MDIR="$GITHUB_WORKSPACE/kernel"
-
         export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1
+
         make -C "$KDIR" M="$MDIR" src="$MDIR" modules CONFIG_KSU=m -j"$(nproc)"
 
         ls -la "$MDIR/kernelsu.ko"
-        echo "=== vermagic ==="
-        strings "$MDIR/kernelsu.ko" | grep -E "^vermagic=" || true
+        GOT=$(strings "$MDIR/kernelsu.ko" | grep '^vermagic=' | head -1 | cut -d= -f2-)
+        echo "vermagic: [$GOT]"
+        [ "$GOT" = "$EXPECT_VERMAGIC" ] || { echo "vermagic mismatch"; exit 1; }
 
         mkdir -p "$GITHUB_WORKSPACE/out"
         cp "$MDIR/kernelsu.ko" "$GITHUB_WORKSPACE/out/kernelsu.ko"
@@ -83,42 +88,30 @@ jobs:
         import struct, sys
         p = sys.argv[1]
         d = bytearray(open(p, "rb").read())
-        assert d[:4] == b"\x7fELF", "not ELF"
-        assert d[4] == 2, "not ELF64"
-        e_shoff  = struct.unpack_from("<Q", d, 0x28)[0]
-        e_shent  = struct.unpack_from("<H", d, 0x3a)[0]
-        e_shnum  = struct.unpack_from("<H", d, 0x3c)[0]
-        e_shstr  = struct.unpack_from("<H", d, 0x3e)[0]
-
-        def sh(i):
-            return struct.unpack_from("<IIQQQQIIQQ", d, e_shoff + i * e_shent)
-
+        assert d[:4] == b"\x7fELF" and d[4] == 2
+        e_shoff = struct.unpack_from("<Q", d, 0x28)[0]
+        e_shent = struct.unpack_from("<H", d, 0x3a)[0]
+        e_shnum = struct.unpack_from("<H", d, 0x3c)[0]
+        e_shstr = struct.unpack_from("<H", d, 0x3e)[0]
+        def sh(i): return struct.unpack_from("<IIQQQQIIQQ", d, e_shoff + i * e_shent)
         stroff = sh(e_shstr)[4]
         def secname(i):
-            o = sh(i)[0]
-            end = d.index(b"\x00", stroff + o)
-            return d[stroff + o:end].decode()
-
+            o = sh(i)[0]; e = d.index(b"\x00", stroff + o)
+            return d[stroff + o:e].decode()
         idx = next((i for i in range(e_shnum) if secname(i) == "__versions"), None)
         if idx is None:
-            print("__versions not found -> add empty/dummy section via objcopy")
-            open("/tmp/vers.bin", "wb").write(b"ksu_bypass\x00" + b"\x00" * 54 + b"\x00\x00\x00\x00")
-            import subprocess
-            subprocess.check_call(["objcopy", "--add-section", "__versions=/tmp/vers.bin",
-                                   "--set-section-flags", "__versions=alloc,load,data,readonly", p])
+            print("__versions absent: nothing to do")
         else:
-            sec = sh(idx)
-            off, size = sec[4], sec[5]
+            sec = sh(idx); off, size = sec[4], sec[5]
             n = size // 68
-            print(f"__versions: offset={off} size={size} entries={n}")
+            print(f"__versions off={off} size={size} entries={n}")
             name = b"ksu_bypass\x00" + b"\x00" * 54
             for i in range(n):
-                d[off + i * 68: off + i * 68 + 64] = name
+                d[off + i*68: off + i*68 + 64] = name
             open(p, "wb").write(d)
-            print("all CRC entry names neutralized")
         PY
-        echo "=== final vermagic ==="
-        strings "$GITHUB_WORKSPACE/out/kernelsu.ko" | grep -E "^vermagic=" || true
+        echo "=== final ==="
+        strings "$GITHUB_WORKSPACE/out/kernelsu.ko" | grep '^vermagic=' || true
 
     - name: Upload artifact
       uses: actions/upload-artifact@v4
