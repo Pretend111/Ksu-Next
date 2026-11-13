@@ -75,9 +75,9 @@ jobs:
 
         echo "=== diagnose: which .o references the three symbols ==="
         for o in $(find "$MDIR" -name '*.o' | grep -v 'kernelsu.o$' | grep -v '/out/'); do
-          if llvm-nm "$o" 2>/dev/null | grep -qE ' U (sidtab_search_entry|ebitmap_cmp|ebitmap_contains)$'; then
+          if llvm-nm "$o" 2>/dev/null | grep -qE ' U (sidtab_search_entry|ebitmap_cmp|ebitmap_contains|__arm64_sys_close|__arm64_sys_setns|__tracepoint_sys_enter|selinux_blob_sizes|__set_fixmap|path_umount|ksys_unshare)$'; then
             echo "--- $o"
-            llvm-nm "$o" | grep -E ' U (sidtab_search_entry|ebitmap_cmp|ebitmap_contains)'
+            llvm-nm "$o" | grep -E ' U (sidtab_search_entry|ebitmap_cmp|ebitmap_contains|__arm64_sys_close|__arm64_sys_setns|__tracepoint_sys_enter|selinux_blob_sizes|__set_fixmap|path_umount|ksys_unshare)'
           fi
         done
         echo "=== end diagnose ==="
