@@ -4,6 +4,7 @@
  */
 #ifdef __aarch64__
 
+#include "infra/ksu_bst_shim.h"
 #include "../patch_memory.h"
 #include "klog.h" // IWYU pragma: keep
 #include "linux/cpumask.h"
@@ -21,7 +22,7 @@
 // since physical address 0 is a valid address.
 unsigned long phys_from_virt(unsigned long addr, int *err)
 {
-    struct mm_struct *mm = &init_mm;
+    struct mm_struct *mm = ksu_bst_ptr_init_mm();
     pgd_t *pgd;
     p4d_t *p4d;
     pud_t *pud;

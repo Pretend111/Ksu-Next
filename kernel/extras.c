@@ -1,3 +1,4 @@
+#include "infra/ksu_bst_shim.h"
 #include <linux/security.h>
 #include <linux/atomic.h>
 #include <linux/version.h>

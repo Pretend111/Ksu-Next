@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
+#include "infra/ksu_bst_shim.h"
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/namei.h>

@@ -1,3 +1,4 @@
+#include "infra/ksu_bst_shim.h"
 #include <linux/anon_inodes.h>
 #include <linux/err.h>
 #include <linux/fdtable.h>
@@ -248,10 +249,10 @@ static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
 
         struct new_utsname *u = utsname();
 
-        down_write(&uts_sem);
+        down_write(ksu_bst_ptr_uts_sem());
         strscpy(u->release, release_buf, sizeof(u->release));
         strscpy(u->version, version_buf, sizeof(u->version));
-        up_write(&uts_sem);
+        up_write(ksu_bst_ptr_uts_sem());
 
         // we write our confirmation on **
         if (copy_to_user((void __user *)arg4, &reply, sizeof(reply)))

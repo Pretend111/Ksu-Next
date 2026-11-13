@@ -1,3 +1,4 @@
+#include "infra/ksu_bst_shim.h"
 #include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/task_work.h>

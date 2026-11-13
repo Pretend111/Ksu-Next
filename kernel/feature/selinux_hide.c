@@ -5,6 +5,7 @@
 // and with it sidtab.h / context.h / mls_types.h static inline helpers that
 // call kernel-internal symbols directly.
 #include "ss_kallsyms_shim.h"
+#include "infra/ksu_bst_shim.h"
 #include "linux/jump_label.h"
 #include "linux/rcupdate.h"
 #include "selinux/sepolicy.h"
@@ -35,6 +36,9 @@
 #include "ksu.h"
 #include "policy/feature.h"
 #include "hook/lsm_hook.h"
+
+/* Non-exported data symbol routed via kallsyms (BlueStacks Air). */
+#define selinux_state (*ksu_bst_ptr_selinux_state())
 
 static DEFINE_MUTEX(selinux_hide_mutex);
 static bool ksu_selinux_hide_enabled __read_mostly = false;

@@ -1,5 +1,6 @@
 #ifdef __aarch64__
 
+#include "infra/ksu_bst_shim.h"
 #include "../syscall_hook.h"
 
 #include <linux/kallsyms.h>

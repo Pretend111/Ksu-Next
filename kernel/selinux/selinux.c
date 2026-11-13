@@ -1,3 +1,4 @@
+#include "infra/ksu_bst_shim.h"
 #include "selinux.h"
 #include "linux/cred.h"
 #include "linux/sched.h"
@@ -6,6 +7,9 @@
 #include "klog.h" // IWYU pragma: keep
 #include "ksu.h"
 #include "infra/symbol_resolver.h"
+
+/* Non-exported data symbol routed via kallsyms (BlueStacks Air). */
+#define selinux_state (*ksu_bst_ptr_selinux_state())
 
 #ifdef CONFIG_ANDROID
 #define ksu_security_secid_to_secctx security_secid_to_secctx

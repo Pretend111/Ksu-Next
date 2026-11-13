@@ -1,3 +1,4 @@
+#include "infra/ksu_bst_shim.h"
 #include "ss/avtab.h"
 #include "ss/constraint.h"
 #include "ss/ebitmap.h"

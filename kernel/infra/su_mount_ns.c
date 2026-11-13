@@ -1,3 +1,4 @@
+#include "infra/ksu_bst_shim.h"
 #include <linux/dcache.h>
 #include <linux/errno.h>
 #include <linux/fdtable.h>
@@ -70,7 +71,7 @@ try_setns:
         goto out;
     }
     struct path ns_path;
-    long ret = ns_get_path(&ns_path, pid1_task, &mntns_operations);
+    long ret = ns_get_path(&ns_path, pid1_task, ksu_bst_ptr_mntns_operations());
     put_task_struct(pid1_task);
     if (ret) {
         pr_warn("failed get path for init mount namespace: %ld\n", ret);

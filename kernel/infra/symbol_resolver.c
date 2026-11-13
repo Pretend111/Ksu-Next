@@ -1,9 +1,25 @@
 #include <linux/kallsyms.h>
 #include <linux/module.h>
+#include <linux/moduleparam.h>
 #include <linux/string.h>
 #include <linux/version.h>
 
 #include "infra/symbol_resolver.h"
+#include "infra/ksu_bst_shim.h"
+
+/*
+ * On non-GKI kernels (e.g. BlueStacks Air) kallsyms_lookup_name is not
+ * exported, so it cannot be a plain linked reference of this module.  The
+ * initrd boot script greps its address from /proc/kallsyms and passes it via
+ * this module parameter; find_kernel_symbol_exact() then works for every
+ * other non-exported symbol (see infra/ksu_bst_shim.h).
+ */
+unsigned long long ksu_bst_kln_addr = 0;
+module_param(ksu_bst_kln_addr, ullong, 0444);
+MODULE_PARM_DESC(ksu_bst_kln_addr,
+		 "Address of kallsyms_lookup_name passed from the boot stage");
+
+unsigned long (*ksu_bst_kln_fn)(const char *name) = NULL;
 
 // https://github.com/torvalds/linux/commit/89245600941e4e0f87d77f60ee269b5e61ef4e49
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
@@ -174,6 +190,13 @@ void *ksu_resolve_symbol_for_functable_hook(const char *symbol_name)
 
 void __init ksu_init_symbol_resolver()
 {
+    /* Bootstrap kallsyms_lookup_name from the boot-provided address. */
+    if (ksu_bst_kln_addr) {
+        ksu_bst_kln_fn = (unsigned long (*)(const char *name))ksu_bst_kln_addr;
+    } else {
+        pr_warn("ksu: ksu_bst_kln_addr module parameter not provided; "
+                "non-exported symbol resolution will fail\n");
+    }
 #if !ALWAYS_HAVE_ON_EACH_SYMBOL
     kallsyms_on_each_symbol_fn = find_kernel_symbol_exact("kallsyms_on_each_symbol");
     if (!kallsyms_on_each_symbol_fn) {

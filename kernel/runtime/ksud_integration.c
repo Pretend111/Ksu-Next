@@ -1,3 +1,4 @@
+#include "infra/ksu_bst_shim.h"
 #include "feature/selinux_hide.h"
 #include <linux/rcupdate.h>
 #include <linux/slab.h>

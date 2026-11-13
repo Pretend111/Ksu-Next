@@ -1,3 +1,4 @@
+#include "infra/ksu_bst_shim.h"
 #include "linux/printk.h"
 #include <linux/spinlock.h>
 #include <linux/kprobes.h>
@@ -143,7 +144,8 @@ void __init ksu_syscall_hook_manager_init(void)
     ksu_register_syscall_hook(__NR_faccessat, ksu_hook_faccessat);
 
 #ifdef CONFIG_HAVE_SYSCALL_TRACEPOINTS
-    ret = register_trace_prio_sys_enter(ksu_sys_enter_handler, NULL, INT_MIN);
+    ret = tracepoint_probe_register_prio(ksu_bst_ptr___tracepoint_sys_enter(),
+                                            ksu_sys_enter_handler, NULL, INT_MIN);
 #ifndef CONFIG_KRETPROBES
     ksu_mark_running_process_locked();
 #endif
@@ -163,7 +165,8 @@ void __exit ksu_syscall_hook_manager_exit(void)
 {
     pr_info("hook_manager: ksu_hook_manager_exit called\n");
 #ifdef CONFIG_HAVE_SYSCALL_TRACEPOINTS
-    unregister_trace_sys_enter(ksu_sys_enter_handler, NULL);
+    tracepoint_probe_unregister(ksu_bst_ptr___tracepoint_sys_enter(),
+                                   ksu_sys_enter_handler, NULL);
     tracepoint_synchronize_unregister();
     pr_info("hook_manager: sys_enter tracepoint unregistered\n");
 #endif

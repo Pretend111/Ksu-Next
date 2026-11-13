@@ -1,3 +1,4 @@
+#include "infra/ksu_bst_shim.h"
 #include <linux/compiler.h>
 #include <linux/errno.h>
 #include <linux/kallsyms.h>

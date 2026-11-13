@@ -1,3 +1,4 @@
+#include "infra/ksu_bst_shim.h"
 #include "hook/patch_memory.h"
 #include "infra/symbol_resolver.h"
 #include "linux/kallsyms.h"

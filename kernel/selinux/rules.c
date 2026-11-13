@@ -1,3 +1,4 @@
+#include "infra/ksu_bst_shim.h"
 #include "linux/rcupdate.h"
 #include "security.h"
 #include <linux/uaccess.h>
@@ -15,17 +16,15 @@
 #include "linux/lsm_audit.h" // IWYU pragma: keep
 #include "xfrm.h"
 
+/* Non-exported data symbol routed via kallsyms (BlueStacks Air). */
+#define selinux_state (*ksu_bst_ptr_selinux_state())
+
 struct selinux_policy *backup_sepolicy;
 
 #define SELINUX_POLICY_INSTEAD_SELINUX_SS
 
 #define ALL NULL
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 4, 0))
-extern int avc_ss_reset(u32 seqno);
-#else
-extern int avc_ss_reset(struct selinux_avc *avc, u32 seqno);
-#endif
 // reset avc cache table, otherwise the new rules will not take effect if already denied
 static void reset_avc_cache()
 {

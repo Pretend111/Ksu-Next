@@ -1,3 +1,4 @@
+#include "infra/ksu_bst_shim.h"
 #include <linux/rcupdate.h>
 #include <linux/limits.h>
 #include <linux/rculist.h>
