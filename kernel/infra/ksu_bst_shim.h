@@ -16,6 +16,9 @@
 
 #include <linux/version.h>
 #include <linux/types.h>
+#include <linux/uidgid.h>
+#include <asm/fixmap.h>
+#include <asm/pgtable_types.h>
 #include <linux/errno.h>
 #include <asm-generic/errno-base.h>
 #include "infra/symbol_resolver.h"
@@ -54,6 +57,7 @@ struct kprobe;
 struct kretprobe;
 struct common_audit_data;
 struct callback_head;
+struct fs_struct;
 
 /* ============ kallsyms_lookup_name bootstrap (insmod param) ============ */
 extern unsigned long long ksu_bst_kln_addr;
@@ -151,7 +155,7 @@ KSU_BST_DECL(int, ns_get_path, struct path *path, struct task_struct *task,
 	return ksu_bst_p_ns_get_path ?
 		       ksu_bst_p_ns_get_path(path, task, ns_ops) : -ENOENT;
 }
-KSU_BST_DECL(void, change_pid, struct task_struct *task, enum pid_type type,
+KSU_BST_DECL(void, change_pid, struct task_struct *task, int type,
 	     struct pid *pid)
 {
 	KSU_BST_ALIAS(change_pid);
@@ -165,7 +169,7 @@ KSU_BST_DECL(bool, current_is_single_threaded, void)
 		       ksu_bst_p_current_is_single_threaded() : false;
 }
 KSU_BST_DECL(int, task_work_add, struct task_struct *task,
-	     struct callback_head *twork, enum task_work_notify_mode mode)
+	     struct callback_head *twork, int mode)
 {
 	KSU_BST_ALIAS(task_work_add);
 	return ksu_bst_p_task_work_add ?
@@ -230,8 +234,7 @@ KSU_BST_DECL(long, __arm64_sys_setns, const struct pt_regs *regs)
 }
 
 /* ============ arch / mem ============ */
-KSU_BST_DECL(void, __set_fixmap, enum fixed_addresses idx, phys_addr_t phys,
-	     pgprot_t flags)
+KSU_BST_DECL(void, __set_fixmap, int idx, phys_addr_t phys, pgprot_t flags)
 {
 	KSU_BST_ALIAS(__set_fixmap);
 	if (ksu_bst_p___set_fixmap)
