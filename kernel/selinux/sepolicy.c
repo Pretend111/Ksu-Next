@@ -14,6 +14,8 @@
 #include "sepolicy.h"
 #include "klog.h" // IWYU pragma: keep
 #include "ss/symtab.h"
+// Route non-exported SELinux ss internals through kallsyms (LKM on custom kernels).
+#include "../feature/ss_kallsyms_shim.h"
 
 #define KSU_SUPPORT_ADD_TYPE
 

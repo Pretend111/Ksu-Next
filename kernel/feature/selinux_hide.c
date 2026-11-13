@@ -19,6 +19,11 @@
 // security/selinux/include/security.h
 #include <security.h>
 #include <ss/context.h>
+// Route non-exported SELinux ss internals through kallsyms (LKM on custom kernels).
+// Must come BEFORE ss/mls.h / ss/conditional.h so their static inline helpers
+// (mls_level_eq etc.) call our kallsyms-backed wrappers instead of unresolved
+// kernel-internal symbols.
+#include "ss_kallsyms_shim.h"
 #include <ss/services.h>
 #include <ss/mls.h>
 #include <ss/conditional.h>
