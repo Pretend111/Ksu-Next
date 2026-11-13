@@ -73,6 +73,15 @@ jobs:
 
         make -C "$KDIR" M="$MDIR" src="$MDIR" modules CONFIG_KSU=m -j"$(nproc)"
 
+        echo "=== diagnose: which .o references the three symbols ==="
+        for o in $(find "$MDIR" -name '*.o' | grep -v 'kernelsu.o$' | grep -v '/out/'); do
+          if llvm-nm "$o" 2>/dev/null | grep -qE ' U (sidtab_search_entry|ebitmap_cmp|ebitmap_contains)$'; then
+            echo "--- $o"
+            llvm-nm "$o" | grep -E ' U (sidtab_search_entry|ebitmap_cmp|ebitmap_contains)'
+          fi
+        done
+        echo "=== end diagnose ==="
+
         ls -la "$MDIR/kernelsu.ko"
         GOT=$(strings "$MDIR/kernelsu.ko" | grep '^vermagic=' | head -1 | cut -d= -f2-)
         echo "vermagic: [$GOT]"
