@@ -1,13 +1,13 @@
 #include "selinux_hide.h"
 #include "infra/symbol_resolver.h"
+// Route non-exported SELinux ss internals through kallsyms (LKM on custom
+// kernels). Must come BEFORE selinux/sepolicy.h which pulls in ss/policydb.h
+// and with it sidtab.h / context.h / mls_types.h static inline helpers that
+// call kernel-internal symbols directly.
+#include "ss_kallsyms_shim.h"
 #include "linux/jump_label.h"
 #include "linux/rcupdate.h"
 #include "selinux/sepolicy.h"
-// Route non-exported SELinux ss internals through kallsyms (LKM on custom
-// kernels). Must come BEFORE ss/policydb.h: that header pulls in sidtab.h /
-// context.h / mls_types.h whose static inline helpers (sidtab_search,
-// mls_range_eq, mls_level_eq...) call kernel-internal symbols directly.
-#include "ss_kallsyms_shim.h"
 #include "ss/policydb.h"
 #include <linux/cred.h>
 #include <linux/cpu.h>
