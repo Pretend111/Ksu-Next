@@ -30,6 +30,11 @@ jobs:
         git clone --depth 1 --branch android13-5.15.137_r00 \
           https://android.googlesource.com/kernel/common "$SRC"
 
+        # Force a deterministic release string: no git suffix, no "+" dirty marker.
+        printf '#!/bin/sh\nexit 0\n' > "$SRC/scripts/setlocalversion"
+        chmod +x "$SRC/scripts/setlocalversion"
+        git config --global --add safe.directory "$SRC" || true
+
         mkdir -p "$KDIR"
         cd "$SRC"
         export ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- LLVM=1 LLVM_IAS=1
