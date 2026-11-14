@@ -83,6 +83,15 @@ bool allow_shell = false;
 #endif
 module_param(allow_shell, bool, 0);
 
+/*
+ * Set by the boot ramdisk when the module is insmod'ed from initrd (before
+ * Android init).  The stock heuristic (current->pid != 1) then misclassifies
+ * it as a manager late-load, which skips init.rc injection so ksud never
+ * starts and the manager shows "jailbreak/late-load" mode.
+ */
+bool ksu_boot_loaded = false;
+module_param_named(boot_loaded, ksu_boot_loaded, bool, 0);
+
 bool ksu_no_custom_rc = false;
 module_param_named(norc, ksu_no_custom_rc, bool, 0);
 
@@ -115,7 +124,7 @@ int __init kernelsu_init(void)
 #endif
 
 #ifdef MODULE
-	ksu_late_loaded = (current->pid != 1);
+	ksu_late_loaded = (current->pid != 1) && !ksu_boot_loaded;
 #else
 	ksu_late_loaded = false;
 #endif
