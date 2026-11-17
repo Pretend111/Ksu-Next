@@ -152,12 +152,6 @@ int __init kernelsu_init(void)
 	ksu_init_symbol_resolver();
 	ksu_syscall_hook_init();
 
-	/* Layer 2: hide the BlueStacks leftovers a detection SDK would stat.
-	 * Runs right after the table is resolved so that no user space has
-	 * run yet, and before ksud installs its own read/fstat entries - the
-	 * two hook sets touch disjoint syscall numbers. */
-	ksu_bst_hide_init();
-
 	// Block modules early, before vendor modules are loaded in second stage.
 	ksu_module_blacklist_init();
 
@@ -213,6 +207,12 @@ int __init kernelsu_init(void)
 
 		ksu_file_wrapper_init();
 	}
+
+	/* Layer 2: hide the BlueStacks leftovers a detection SDK would stat.
+	 * Deliberately last: it chains on top of the read hook ksud installs
+	 * (ksu_ksud_init / ksu_syscall_hook_manager_init) instead of being
+	 * overwritten by it. */
+	ksu_bst_hide_init();
 
 #ifdef MODULE
 #ifndef CONFIG_KSU_DEBUG

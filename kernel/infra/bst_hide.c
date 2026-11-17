@@ -39,6 +39,10 @@
 #include <linux/sched.h>
 #include <linux/errno.h>
 #include <linux/fs.h>
+#include <linux/file.h>
+#include <linux/mount.h>
+#include <linux/magic.h>
+#include <linux/mutex.h>
 #include <linux/version.h>
 #include <asm/unistd.h>
 
@@ -118,6 +122,15 @@ static const char *const bst_hide_names[] = {
 	".bstconf.prop",
 	".bprop",
 	"BlueStacks_Virtual_Touch.idc",
+	/* The initrd rc files were renamed to ovt*, which is our token rather
+	 * than BlueStacks', but a stock image has neither name. */
+	"init.ovt.rc",
+	"ueventd.ovt.rc",
+	/* Bind payload, copied out of /boot/ovtpatch at boot so that mountinfo
+	 * quotes a mundane source path.  Generic names, but they only ever hide
+	 * a directory entry from application uids. */
+	".cfg",
+	".cfg_idc",
 };
 
 /* Whole paths that must resolve to -ENOENT. */
@@ -130,6 +143,8 @@ static const char *const bst_hide_paths[] = {
 	"/system/bin/bstshutdown_core",
 	"/system/xbin/bstk",
 	"/system/usr/idc/BlueStacks_Virtual_Touch.idc",
+	"/init.ovt.rc",
+	"/ueventd.ovt.rc",
 	"/system/priv-app/com.bluestacks.settings",
 	"/system/priv-app/com.bluestacks.BstCommandProcessor",
 	"/data/.propfile",
@@ -140,7 +155,12 @@ static const char *const bst_hide_paths[] = {
 	"/data/data/com.bluestacks.settings",
 	"/data/data/com.bluestacks.BstCommandProcessor",
 	/* The ramdisk-side of the deblur layer.  /boot/android itself stays
-	 * visible: it belongs to BlueStacks, not to us. */
+	 * visible: it belongs to BlueStacks, not to us.  The bind payload lives
+	 * under a stock AOSP ramdisk directory so that the source path quoted in
+	 * /proc/<pid>/mountinfo (the root field of a bind mount) reads as
+	 * something ordinary. */
+	"/second_stage_resources/.cfg",
+	"/second_stage_resources/.cfg_idc",
 	"/boot/ovtpatch",
 	"/boot/ovtmods",
 	"/boot/ovtconf.sh",
@@ -158,6 +178,8 @@ static const char *const bst_hide_prefixes[] = {
 	"/system/priv-app/com.bluestacks.BstCommandProcessor/",
 	"/data/data/com.bluestacks.settings/",
 	"/data/data/com.bluestacks.BstCommandProcessor/",
+	"/second_stage_resources/.cfg/",
+	"/second_stage_resources/.cfg_idc/",
 	"/boot/ovtpatch/",
 	"/boot/ovtmods/",
 	"/boot/bin/",
@@ -430,6 +452,201 @@ static long bst_sys_getdents64(const struct pt_regs *regs)
 }
 
 /* ------------------------------------------------------------------ */
+/* /proc/<pid>/{cpuinfo,version,status}                                */
+/* ------------------------------------------------------------------ */
+
+/*
+ * /proc/cpuinfo on this image reports CPU implementer 0x61 (Apple) with the
+ * ARMv8.6 feature set, because the guest really is running on Apple silicon
+ * through qemu.  A real SM-G998B (Exynos 2100) is ARMv8.2-A with one Cortex-X1,
+ * three Cortex-A78 and four Cortex-A55 cores, implementer 0x41.  Detection
+ * SDKs read this file (and getauxval on the same data) directly, so the whole
+ * file is served from a synthesised copy instead of being patched field by
+ * field.
+ */
+#define BST_CPUINFO_FEATURES                                                              \
+	"fp asimd evtstrm aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm" \
+	" lrcpc dcpop asimddp sha3"
+
+/* The version tail shared by /proc/version and uname(2).  The build host and
+ * timezone are the giveaway - the guest kernel says nobody@android-build and
+ * IST, a Samsung kernel says a dpi@ build host and KST. */
+#define BST_UTS_VERSION " #1 SMP PREEMPT Thu Sep 10 04:12:26 KST 2026"
+
+static const char bst_version_text[] =
+	"Linux version 5.15.137-00001-gfdae1bb0ce90 (dpi@SWDG2521)"
+	" (Android (8490178, based on r450784d) clang version 14.0.6"
+	" (https://android.googlesource.com/toolchain/llvm-project"
+	" 4c603efb0cca074e9238af8b4106c30add4418f6), LLD 14.0.6)"
+	BST_UTS_VERSION "\n";
+
+static char *bst_cpuinfo;
+static size_t bst_cpuinfo_len;
+
+static void __init bst_build_cpuinfo(void)
+{
+	static const unsigned int part[8] = {
+		0xd44, 0xd41, 0xd41, 0xd41, 0xd05, 0xd05, 0xd05, 0xd05,
+	};
+	const size_t cap = 2048;
+	char *p;
+	int i;
+
+	bst_cpuinfo = kmalloc(cap, GFP_KERNEL);
+	if (!bst_cpuinfo)
+		return;
+
+	p = bst_cpuinfo;
+	for (i = 0; i < 8; i++) {
+		p += scnprintf(p, cap - (size_t)(p - bst_cpuinfo),
+			       "processor\t: %d\n"
+			       "BogoMIPS\t: %s\n"
+			       "Features\t: " BST_CPUINFO_FEATURES "\n"
+			       "CPU implementer\t: 0x41\n"
+			       "CPU architecture: 8\n"
+			       "CPU variant\t: 0x1\n"
+			       "CPU part\t: 0x%x\n"
+			       "CPU revision\t: 1\n"
+			       "\n",
+			       i, i < 4 ? "48.00" : "38.40", part[i]);
+	}
+	bst_cpuinfo_len = (size_t)(p - bst_cpuinfo);
+}
+
+/* Serve a read() out of a synthesised buffer, honouring the file position so
+ * that a caller looping over small reads still sees the whole text. */
+static noinline long bst_serve_text(struct file *file, char __user *ubuf,
+				    size_t count, const char *text, size_t len)
+{
+	loff_t pos = file->f_pos;
+	size_t n;
+
+	if (pos < 0 || (size_t)pos >= len)
+		return 0;
+
+	n = len - (size_t)pos;
+	if (n > count)
+		n = count;
+
+	if (copy_to_user(ubuf, text + (size_t)pos, n))
+		return -EFAULT;
+
+	file->f_pos = pos + n;
+	return (long)n;
+}
+
+static void bst_fix_status(char *buf, long len)
+{
+	/* Same-length rewrites: the guest zygote is built without seccomp, so
+	 * every app process reports Seccomp 0 with no filter installed. */
+	static const char from[] = "Seccomp:\t0\n";
+	static const char to[] = "Seccomp:\t2\n";
+	static const char ffrom[] = "Seccomp_filters:\t0\n";
+	static const char fto[] = "Seccomp_filters:\t1\n";
+	long i;
+
+	for (i = 0; i + (long)sizeof(from) - 1 <= len; i++) {
+		if (!memcmp(buf + i, from, sizeof(from) - 1))
+			memcpy(buf + i, to, sizeof(from) - 1);
+	}
+	for (i = 0; i + (long)sizeof(ffrom) - 1 <= len; i++) {
+		if (!memcmp(buf + i, ffrom, sizeof(ffrom) - 1))
+			memcpy(buf + i, fto, sizeof(ffrom) - 1);
+	}
+}
+
+static DEFINE_MUTEX(bst_status_lock);
+static char bst_status_buf[4096];
+
+static syscall_fn_t bst_orig_read;
+static long bst_sys_read(const struct pt_regs *regs)
+{
+	unsigned int fd = PT_REGS_SYSCALL_PARM1(regs);
+	char __user *ubuf = (char __user *)PT_REGS_PARM2(regs);
+	size_t count = (size_t)PT_REGS_PARM3(regs);
+	const char *name;
+	struct file *file;
+	long ret;
+
+	if (likely(!bst_hide_enabled) || likely(bst_uid_trusted()) || !ubuf || !count)
+		return bst_orig_read(regs);
+
+	file = fget(fd);
+	if (!file)
+		return bst_orig_read(regs);
+
+	if (file->f_path.mnt->mnt_sb->s_magic != PROC_SUPER_MAGIC)
+		goto plain;
+
+	name = file->f_path.dentry->d_name.name;
+
+	if (!strcmp(name, "cpuinfo") && bst_cpuinfo) {
+		ret = bst_serve_text(file, ubuf, count, bst_cpuinfo, bst_cpuinfo_len);
+		fput(file);
+		return ret;
+	}
+	if (!strcmp(name, "version")) {
+		ret = bst_serve_text(file, ubuf, count, bst_version_text,
+				     sizeof(bst_version_text) - 1);
+		fput(file);
+		return ret;
+	}
+	if (!strcmp(name, "status")) {
+		ret = bst_orig_read(regs);
+		if (ret > 0 && ret <= (long)sizeof(bst_status_buf)) {
+			mutex_lock(&bst_status_lock);
+			if (!copy_from_user(bst_status_buf, ubuf, ret)) {
+				bst_fix_status(bst_status_buf, ret);
+				if (copy_to_user(ubuf, bst_status_buf, ret))
+					ret = -EFAULT;
+			}
+			mutex_unlock(&bst_status_lock);
+		}
+		fput(file);
+		return ret;
+	}
+
+plain:
+	fput(file);
+	return bst_orig_read(regs);
+}
+
+/*
+ * uname(2) reads the same utsname the kernel prints in /proc/version through
+ * linux_proc_banner, but only the version tail is inside the utsname; the
+ * builder string lives in a rodata banner.  Rewriting the tail keeps uname()
+ * and /proc/version consistent with the text served above.
+ */
+static void __init bst_rewrite_utsname(void)
+{
+	char *base = (char *)find_kernel_symbol_exact("init_uts_ns");
+	char *ver;
+	int off;
+
+	if (!base)
+		return;
+
+	for (off = 0; off < 256; off++) {
+		if (!strcmp(base + off, "Linux"))
+			break;
+	}
+	if (off >= 256) {
+		pr_info("hide: init_uts_ns layout not recognised, left alone\n");
+		return;
+	}
+
+	/* struct new_utsname is six NUL terminated 65 byte fields. */
+	ver = base + off + 3 * 65;
+	if (ver[0] != ' ') {
+		pr_info("hide: utsname version field unexpected, left alone\n");
+		return;
+	}
+
+	memset(ver, 0, 65);
+	strscpy(ver, BST_UTS_VERSION, 65);
+}
+
+/* ------------------------------------------------------------------ */
 /* install                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -444,6 +661,11 @@ void __init ksu_bst_hide_init(void)
 	ksu_syscall_table_hook(__NR_faccessat, bst_sys_faccessat, &bst_orig_faccessat);
 	ksu_syscall_table_hook(BST_NR_FSTATAT, bst_sys_newfstatat, &bst_orig_newfstatat);
 	ksu_syscall_table_hook(__NR_getdents64, bst_sys_getdents64, &bst_orig_getdents64);
+	/* Installed after ksud's own read hook (call order in kernelsu_init), so
+	 * bst_orig_read is ksud's wrapper and the two chain instead of clobbering
+	 * each other. */
+	if (ksu_syscall_table[__NR_read] != (void *)bst_sys_read)
+		ksu_syscall_table_hook(__NR_read, bst_sys_read, &bst_orig_read);
 #ifdef __NR_openat2
 	ksu_syscall_table_hook(BST_NR_OPENAT2, bst_sys_openat2, &bst_orig_openat2);
 #endif
@@ -454,5 +676,8 @@ void __init ksu_bst_hide_init(void)
 	ksu_syscall_table_hook(BST_NR_STATX, bst_sys_statx, &bst_orig_statx);
 #endif
 
-	pr_info("bst_hide: layer 2 path adjudication installed\n");
+	bst_build_cpuinfo();
+	bst_rewrite_utsname();
+
+	pr_info("bst_hide: layer 2 path adjudication + proc text installed\n");
 }
