@@ -263,9 +263,12 @@ static noinline long bst_guard_path(const char __user *uname, syscall_fn_t orig,
 
 	/* Cheap rejection first: a path that carries none of these bytes
 	 * cannot match anything in the tables.  ("prop" rather than ".propfile"
-	 * so that /data/.bluestacks.prop is not filtered out here.) */
+	 * so that /data/.bluestacks.prop is not filtered out here; "ovt" and
+	 * "cfg" cover the files this layer renamed or relocated itself, which
+	 * by construction no longer carry a BlueStacks token.) */
 	if (likely(!strstr(path, "bst") && !strstr(path, "prop") &&
-		   !strstr(path, "idc") && strncmp(path, "/boot/", 6) != 0))
+		   !strstr(path, "idc") && !strstr(path, "ovt") &&
+		   !strstr(path, "cfg") && strncmp(path, "/boot/", 6) != 0))
 		return orig(regs);
 
 	if (likely(!bst_path_hidden(path)))
