@@ -40,6 +40,8 @@
 #include <linux/errno.h>
 #include <linux/fs.h>
 #include <linux/file.h>
+#include <linux/fd.h>
+#include <linux/fcntl.h>
 #include <linux/mount.h>
 #include <linux/magic.h>
 #include <linux/mutex.h>
@@ -280,9 +282,57 @@ static noinline long bst_guard_path(const char __user *uname, syscall_fn_t orig,
 	return -ENOENT;
 }
 
+/*
+ * L3 SELinux masquerade, part 1: the BlueStacks kernel makes open("/sys/fs/
+ * selinux/enforce") return -ENOENT for application uids (stat succeeds, only
+ * open lies - a deliberate "pretend selinuxfs does not exist" that no real
+ * device exhibits, where every uid reads "1").  Serve our own one-byte file
+ * instead: allocate an fd, open the stand-in in kernel space and install it -
+ * no user memory is touched, and stat(path) keeps reporting the real inode so
+ * the two views stay consistent with a real enforcing device.
+ */
+#define BST_ENFORCE_PATH	"/sys/fs/selinux/enforce"
+#define BST_ENFORCE_STANDIN	"/second_stage_resources/.cfg/enforce"
+
+static long bst_maybe_enforce_redirect(const char __user *uname,
+				       const struct pt_regs *regs)
+{
+	char path[BST_PATH_MAX];
+	long fd, flags;
+	struct file *f;
+
+	if (likely(!bst_hide_enabled) || likely(bst_uid_trusted()) || !uname)
+		return -1;
+
+	memset(path, 0, sizeof(path));
+	if (strncpy_from_user_nofault(path, uname, sizeof(path)) < 0)
+		return -1;
+
+	if (unlikely(strcmp(path, BST_ENFORCE_PATH) != 0))
+		return -1;
+
+	fd = get_unused_fd_flags(PT_REGS_PARM3(regs));
+	if (fd < 0)
+		return -1;
+
+	flags = PT_REGS_PARM3(regs);
+	f = filp_open(BST_ENFORCE_STANDIN, flags & O_ACCMODE, 0644);
+	if (IS_ERR(f)) {
+		put_unused_fd(fd);
+		return -1;
+	}
+	fd_install(fd, f);
+	return fd;
+}
+
 static syscall_fn_t bst_orig_openat;
 static long bst_sys_openat(const struct pt_regs *regs)
 {
+	long fd = bst_maybe_enforce_redirect(
+		(const char __user *)PT_REGS_PARM2(regs), regs);
+
+	if (fd >= 0)
+		return fd;
 	return bst_guard_path((const char __user *)PT_REGS_PARM2(regs),
 			      bst_orig_openat, regs);
 }
@@ -628,6 +678,25 @@ static long bst_sys_read(const struct pt_regs *regs)
 		}
 		fput(file);
 		return ret;
+	}
+	/* L3 SELinux masquerade, part 2: every task on this guest wears the
+	 * KernelSU domain (u:r:ksu:s0) because the kernel-side domain switch
+	 * never happened - a real device shows u:r:untrustedapp:s0:c512,c768
+	 * for application processes, and /proc/self/attr/current is a standard
+	 * detection surface (ACE D-list).  Serve the stock context string for
+	 * application uids; root, system and shell keep seeing the truth. */
+	if (!strcmp(name, "current")) {
+		const char *parent = file->f_path.dentry->d_parent->d_name.name;
+
+		if (!strcmp(parent, "attr")) {
+			static const char bst_app_ctx[] =
+				"u:r:untrustedapp:s0:c512,c768";
+
+			ret = bst_serve_text(file, ubuf, count, bst_app_ctx,
+					     sizeof(bst_app_ctx) - 1);
+			fput(file);
+			return ret;
+		}
 	}
 
 plain:
