@@ -473,13 +473,13 @@ static long bst_sys_getdents64(const struct pt_regs *regs)
 /* The version tail shared by /proc/version and uname(2).  The build host and
  * timezone are the giveaway - the guest kernel says nobody@android-build and
  * IST, a Samsung kernel says a dpi@ build host and KST. */
-#define BST_UTS_VERSION " #1 SMP PREEMPT Thu Sep 10 04:12:26 KST 2026"
+#define BST_UTS_VERSION "#1 SMP PREEMPT Thu Sep 10 04:12:26 KST 2026"
 
 static const char bst_version_text[] =
 	"Linux version 5.15.137-00001-gfdae1bb0ce90 (dpi@SWDG2521)"
 	" (Android (8490178, based on r450784d) clang version 14.0.6"
 	" (https://android.googlesource.com/toolchain/llvm-project"
-	" 4c603efb0cca074e9238af8b4106c30add4418f6), LLD 14.0.6)"
+	" 4c603efb0cca074e9238af8b4106c30add4418f6), LLD 14.0.6) "
 	BST_UTS_VERSION "\n";
 
 static char *bst_cpuinfo;
@@ -639,9 +639,10 @@ static void __init bst_rewrite_utsname(void)
 		return;
 	}
 
-	/* struct new_utsname is six NUL terminated 65 byte fields. */
+	/* struct new_utsname is six NUL terminated 65 byte fields; the kernel
+	 * initialises version from UTS_VERSION, which starts with '#'. */
 	ver = base + off + 3 * 65;
-	if (ver[0] != ' ') {
+	if (ver[0] != '#') {
 		pr_info("hide: utsname version field unexpected, left alone\n");
 		return;
 	}
