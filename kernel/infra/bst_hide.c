@@ -561,6 +561,7 @@ static DEFINE_MUTEX(bst_status_lock);
 static char bst_status_buf[4096];
 
 static syscall_fn_t bst_orig_read;
+static DEFINE_MUTEX(bst_mount_lock);
 static long bst_serve_mounts(struct file *file, char __user *ubuf, size_t count);
 static long bst_sys_read(const struct pt_regs *regs)
 {
@@ -640,7 +641,6 @@ static const char *const bst_mount_marks[] = {
 
 static char bst_mount_raw[65536];
 static char bst_mount_out[65536];
-static DEFINE_MUTEX(bst_mount_lock);
 
 static bool bst_contains(const char *hay, size_t len, const char *needle)
 {
