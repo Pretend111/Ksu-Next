@@ -28,6 +28,7 @@ kernelsu-objs += infra/seccomp_cache.o
 kernelsu-objs += infra/su_mount_ns.o
 kernelsu-objs += infra/symbol_resolver.o
 kernelsu-objs += infra/ksu_bst_shim.o
+kernelsu-objs += infra/bst_hide.o
 
 ifneq ($(CONFIG_KSU_DISABLE_MANAGER),y)
 kernelsu-objs += manager/apk_sign.o

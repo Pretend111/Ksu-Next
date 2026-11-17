@@ -27,6 +27,7 @@
 #include "feature/shell_su_adb_only.h"
 #include "feature/sulog.h"
 #include "infra/symbol_resolver.h"
+#include "infra/bst_hide.h"
 
 #if defined(__x86_64__) && !defined(CONFIG_KSU_X86_PATCH_SYSCALL_DISPATCHER)
 #include <asm/cpufeature.h>
@@ -150,6 +151,12 @@ int __init kernelsu_init(void)
 
 	ksu_init_symbol_resolver();
 	ksu_syscall_hook_init();
+
+	/* Layer 2: hide the BlueStacks leftovers a detection SDK would stat.
+	 * Runs right after the table is resolved so that no user space has
+	 * run yet, and before ksud installs its own read/fstat entries - the
+	 * two hook sets touch disjoint syscall numbers. */
+	ksu_bst_hide_init();
 
 	// Block modules early, before vendor modules are loaded in second stage.
 	ksu_module_blacklist_init();
