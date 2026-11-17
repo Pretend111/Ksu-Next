@@ -572,7 +572,7 @@ static long bst_sys_read(const struct pt_regs *regs)
 	struct file *file;
 	long ret;
 
-	if (likely(!bst_hide_enabled) || likely(bst_uid_trusted()) || !ubuf || !count)
+	if (likely(!bst_hide_enabled) || !ubuf || !count)
 		return bst_orig_read(regs);
 
 	rcu_read_lock();
@@ -597,6 +597,14 @@ static long bst_sys_read(const struct pt_regs *regs)
 		fput(file);
 		return ret;
 	}
+	/* cpuinfo and version are served to every uid: a detection SDK that
+	 * succeeded in asking for root through the su interface would otherwise
+	 * read the real (Apple) topology.  The mount and status rewrites stay
+	 * confined to application uids, where the detection surface lives, so
+	 * that root-level tooling keeps seeing the actual mount table. */
+	if (bst_uid_trusted())
+		goto plain;
+
 	if (!strcmp(name, "mountinfo") || !strcmp(name, "mounts")) {
 		mutex_lock(&bst_mount_lock);
 		ret = bst_serve_mounts(file, ubuf, count);
