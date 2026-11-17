@@ -561,6 +561,7 @@ static DEFINE_MUTEX(bst_status_lock);
 static char bst_status_buf[4096];
 
 static syscall_fn_t bst_orig_read;
+static long bst_serve_mounts(struct file *file, char __user *ubuf, size_t count);
 static long bst_sys_read(const struct pt_regs *regs)
 {
 	unsigned int fd = PT_REGS_SYSCALL_PARM1(regs);
@@ -595,6 +596,13 @@ static long bst_sys_read(const struct pt_regs *regs)
 		fput(file);
 		return ret;
 	}
+	if (!strcmp(name, "mountinfo") || !strcmp(name, "mounts")) {
+		mutex_lock(&bst_mount_lock);
+		ret = bst_serve_mounts(file, ubuf, count);
+		mutex_unlock(&bst_mount_lock);
+		fput(file);
+		return ret;
+	}
 	if (!strcmp(name, "status")) {
 		ret = bst_orig_read(regs);
 		if (ret > 0 && ret <= (long)sizeof(bst_status_buf)) {
@@ -613,6 +621,92 @@ static long bst_sys_read(const struct pt_regs *regs)
 plain:
 	fput(file);
 	return bst_orig_read(regs);
+}
+
+/*
+ * /proc/<pid>/mountinfo and /proc/<pid>/mounts quote the source of every bind
+ * mount in their root field, so the six mounts this layer installs would name
+ * /second_stage_resources/.cfg and the bst binaries outright.  The whole file
+ * is slurped through the file operations (not the syscall under test), the
+ * lines that name our layer are dropped, and the filtered copy is served from
+ * the caller's file position.  The pseudo files are a few kilobytes and the
+ * content does not change between reads, so re-slurping per call keeps the
+ * position mapping stable.
+ */
+static const char *const bst_mount_marks[] = {
+	"ovt", "bst", "second_stage_resources", "bprop", "propfile",
+	"bluestacks", ".cfg",
+};
+
+static char bst_mount_raw[65536];
+static char bst_mount_out[65536];
+static DEFINE_MUTEX(bst_mount_lock);
+
+static bool bst_contains(const char *hay, size_t len, const char *needle)
+{
+	size_t nlen = strlen(needle);
+	size_t i;
+
+	if (!nlen || nlen > len)
+		return false;
+
+	for (i = 0; i + nlen <= len; i++) {
+		if (!memcmp(hay + i, needle, nlen))
+			return true;
+	}
+	return false;
+}
+
+static long bst_serve_mounts(struct file *file, char __user *ubuf, size_t count)
+{
+	loff_t pos = 0;
+	loff_t want = file->f_pos;
+	size_t total = 0, out = 0, line = 0, i;
+	long n, served;
+	int m;
+
+	while (total + 4096 < sizeof(bst_mount_raw)) {
+		n = kernel_read(file, bst_mount_raw + total,
+				sizeof(bst_mount_raw) - total - 4096, &pos);
+		if (n <= 0)
+			break;
+		total += (size_t)n;
+	}
+
+	for (i = 0; i < total; i++) {
+		size_t len;
+		bool drop = false;
+
+		if (bst_mount_raw[i] != '\n')
+			continue;
+
+		len = i - line;
+		for (m = 0; m < (int)ARRAY_SIZE(bst_mount_marks); m++) {
+			if (bst_contains(bst_mount_raw + line, len, bst_mount_marks[m])) {
+				drop = true;
+				break;
+			}
+		}
+		if (!drop && out + len + 1 <= sizeof(bst_mount_out)) {
+			memcpy(bst_mount_out + out, bst_mount_raw + line, len);
+			bst_mount_out[out + len] = '\n';
+			out += len + 1;
+		}
+		line = i + 1;
+	}
+
+	if (want < 0 || (size_t)want >= out)
+		return 0;
+
+	served = (long)(out - (size_t)want);
+	if ((size_t)served > count)
+		served = (long)count;
+
+	if (copy_to_user(ubuf, bst_mount_out + want, served))
+		return -EFAULT;
+
+	file->f_pos = want + served;
+	return served;
 }
 
 /*
