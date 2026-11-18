@@ -47,6 +47,9 @@
 #include <linux/mutex.h>
 #include <linux/rcupdate.h>
 #include <linux/version.h>
+#include <linux/atomic.h>
+#include <linux/signal.h>
+#include <linux/sched/signal.h>
 #include <asm/unistd.h>
 
 #include "arch.h"
@@ -826,6 +829,69 @@ static void __init bst_rewrite_utsname(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* self-kill guard                                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The Chunqiu native detector ends a failed verdict by killing its own
+ * process with SIGKILL - no tombstone, no log, the app just vanishes.  A
+ * normal application never deliberately SIGKILLs itself, so for application
+ * uids we drop exactly that one signal and let the run reach its UI, where
+ * the individual findings stay readable.
+ *
+ * Scope is deliberately narrow: SIGKILL only, caller uid >= 10000, target
+ * must be the caller's own thread group (pid == getpid(), which is what the
+ * detector stores and re-uses, or pid <= 0, the killpg(2) form aimed at its
+ * own group).  init, system_server, HALs, and every system uid are untouched.
+ */
+static bool bst_killguard_enabled __read_mostly = true;
+module_param_named(bst_killguard, bst_killguard_enabled, bool, 0644);
+
+static atomic_t bst_killguard_hits = ATOMIC_INIT(0);
+
+static noinline bool bst_killguard_self(pid_t pid)
+{
+	pid_t tgid = task_tgid_vnr(current);
+
+	return pid == tgid || pid == 0 || pid == -tgid;
+}
+
+static noinline bool bst_killguard_drop(int sig, pid_t pid)
+{
+	int hits;
+
+	if (likely(sig != SIGKILL) || likely(!bst_killguard_enabled) ||
+	    likely(bst_uid_trusted()) || !bst_killguard_self(pid))
+		return false;
+
+	hits = atomic_inc_return(&bst_killguard_hits);
+	if (hits <= 8 || (hits % 64) == 0)
+		pr_info("bst_hide: dropped self SIGKILL from %s (uid %u, hit %d)\n",
+			current->comm, current_uid().val, hits);
+	return true;
+}
+
+static syscall_fn_t bst_orig_kill;
+static long bst_sys_kill(const struct pt_regs *regs)
+{
+	if (bst_killguard_drop((int)PT_REGS_PARM2(regs),
+			       (pid_t)PT_REGS_PARM1(regs)))
+		return 0;
+
+	return bst_orig_kill(regs);
+}
+
+static syscall_fn_t bst_orig_tgkill;
+static long bst_sys_tgkill(const struct pt_regs *regs)
+{
+	if (bst_killguard_drop((int)PT_REGS_PARM3(regs),
+			       (pid_t)PT_REGS_PARM1(regs)))
+		return 0;
+
+	return bst_orig_tgkill(regs);
+}
+
+/* ------------------------------------------------------------------ */
 /* install                                                             */
 /* ------------------------------------------------------------------ */
 
@@ -854,9 +920,13 @@ void __init ksu_bst_hide_init(void)
 #ifdef __NR_statx
 	ksu_syscall_table_hook(BST_NR_STATX, bst_sys_statx, &bst_orig_statx);
 #endif
+	/* Kill guard: keeps a self-killing detector alive long enough to show
+	 * its verdict.  Same table, same mechanism, no extra footprint. */
+	ksu_syscall_table_hook(__NR_kill, bst_sys_kill, &bst_orig_kill);
+	ksu_syscall_table_hook(__NR_tgkill, bst_sys_tgkill, &bst_orig_tgkill);
 
 	bst_build_cpuinfo();
 	bst_rewrite_utsname();
 
-	pr_info("bst_hide: layer 2 path adjudication + proc text installed\n");
+	pr_info("bst_hide: layer 2 path adjudication + proc text + kill guard installed\n");
 }
