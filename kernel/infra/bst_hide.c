@@ -43,6 +43,7 @@
 #include <linux/fd.h>
 #include <linux/fcntl.h>
 #include <linux/mount.h>
+#include <linux/mman.h>
 #include <linux/magic.h>
 #include <linux/mutex.h>
 #include <linux/rcupdate.h>
@@ -50,6 +51,9 @@
 #include <linux/atomic.h>
 #include <linux/signal.h>
 #include <linux/sched/signal.h>
+#include <linux/dcache.h>
+#include <linux/mm.h>
+#include <linux/limits.h>
 #include <asm/unistd.h>
 
 #include "arch.h"
@@ -102,6 +106,60 @@ module_param_named(bst_hide, bst_hide_enabled, bool, 0644);
  * for that, and the log is one of the surfaces ACE reads. */
 static bool bst_hide_log __read_mostly;
 module_param_named(bst_hide_log, bst_hide_log, bool, 0644);
+
+/*
+ * Diagnostic probe counter.  A detector decides what to report from a modest
+ * number of kernel surfaces; finding out which ones a given build actually
+ * looks at is otherwise guesswork, because the verdict UI shows only a
+ * synopsis.  With bst_trace=1 an application uid's opens of the handful of
+ * surfaces below are logged to dmesg, which makes the probe list of a run
+ * readable.  It is a debugging aid, not a layer: this build ships it on so
+ * that the probe list of a detector run can be read straight out of dmesg,
+ * capped at 2000 lines so a long uptime cannot flood the ring buffer.
+ */
+#define BST_TRACE_MAX 2000
+static bool bst_trace_enabled __read_mostly = true;
+module_param_named(bst_trace, bst_trace_enabled, bool, 0644);
+static atomic_t bst_trace_hits = ATOMIC_INIT(0);
+
+static const char *const bst_trace_paths[] = {
+	"/proc/cmdline",
+	"/proc/config.gz",
+	"/proc/device-tree",
+	"/sys/fs/selinux",
+	"/sys/devices/platform",
+	"/sys/devices/system/cpu",
+	"/sys/class/tty",
+	"/sys/block",
+	"/sys/bus",
+	"/sys/firmware",
+	"/dev/vsock",
+	"/dev/vhost",
+	"/dev/ovtgmd",
+	"/dev/__properties__",
+};
+
+static void bst_trace_path(const char *path)
+{
+	size_t i;
+
+	if (likely(!bst_trace_enabled))
+		return;
+	if (atomic_inc_return(&bst_trace_hits) > BST_TRACE_MAX) {
+		bst_trace_enabled = false;
+		pr_info("hide: probe trace capped\n");
+		return;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(bst_trace_paths); i++) {
+		if (!strncmp(path, bst_trace_paths[i],
+			     strlen(bst_trace_paths[i]))) {
+			pr_info("trace: app %s (uid %u)\n", path,
+				current_uid().val);
+			return;
+		}
+	}
+}
 
 struct bst_dirent64 {
 	u64 d_ino;
@@ -242,6 +300,134 @@ static bool bst_path_hidden(const char *path)
 	return bst_name_hidden(bst_basename(path));
 }
 
+/* ------------------------------------------------------------------ */
+/* L4: virtualisation artefacts in sysfs and devtmpfs                  */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The guest boots on qemu's "virt" machine, so sysfs advertises hardware no
+ * phone ever shipped: thirty-two virtio-mmio transports, an ARM pl011 UART
+ * (ttyAMA0, which Android never has - Android phones use ttyMSM0/ttySAC0),
+ * a pl031 RTC, a pl061 GPIO bank, a fw_cfg node, virtio block disks named
+ * vda/vdb and a single generic PCIe host.  A detection SDK that enumerates
+ * /sys/devices/platform, /sys/class/tty, /sys/bus or /sys/block sees the
+ * hypervisor immediately, which is what the "Miscellaneous Check" family of
+ * findings is about.
+ *
+ * Matching is by exact name or by one of the four qemu-specific suffixes,
+ * never by a substring: "virtio" is also a legitimate real host bus on
+ * virtualised cloud phones, and "pl011" appears in no other context.  The
+ * checks only ever apply below /sys and /dev, so an application file that
+ * happens to be called "vda" is unaffected.
+ *
+ * Everything is answered for application uids only - HALs, init and root
+ * still enumerate the real tree, which keeps qemu's own device handling and
+ * any root-level debugging intact.
+ */
+static const char *const bst_vm_names[] = {
+	"ttyAMA0",
+	"virtio",
+	"reg-dummy",
+	"snd-soc-dummy",
+	"platform-framebuffer.0",
+	"platform-bus@c000000",
+	"Fixed MDIO bus.0",
+	"0.flash",
+	"4ff000000.pcie",
+	"vhost-vsock",
+};
+
+static const char *const bst_vm_suffixes[] = {
+	".pl011",
+	".pl031",
+	".pl061",
+	".fw-cfg",
+};
+
+/* Not every 5.15 branch carries this one in linux/magic.h. */
+#ifndef DEVTMPFS_MAGIC
+#define DEVTMPFS_MAGIC 0x00001cd1
+#endif
+
+static bool bst_vm_name_hidden(const char *name)
+{
+	size_t i, len;
+
+	if (!name || !name[0])
+		return false;
+
+	len = strlen(name);
+
+	for (i = 0; i < ARRAY_SIZE(bst_vm_names); i++) {
+		if (!strcmp(name, bst_vm_names[i]))
+			return true;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(bst_vm_suffixes); i++) {
+		size_t slen = strlen(bst_vm_suffixes[i]);
+
+		if (len > slen && !strcmp(name + len - slen, bst_vm_suffixes[i]))
+			return true;
+	}
+
+	/* a000000.virtio_mmio ... a003e00.virtio_mmio, each with a virtioN
+	 * child directory, plus the virtio bus they hang off. */
+	if (strstr(name, ".virtio_mmio"))
+		return true;
+
+	/* virtio block disks: vda, vdb, ... (a phone shows mmcblk0/sda). */
+	if (len >= 3 && name[0] == 'v' && name[1] == 'd' &&
+	    name[2] >= 'a' && name[2] <= 'z') {
+		size_t k = 3;
+
+		while (name[k] >= '0' && name[k] <= '9')
+			k++;
+		if (!name[k])
+			return true;
+	}
+
+	return false;
+}
+
+/*
+ * Walk an absolute path component by component and reject it when any single
+ * component is one of the machine model's names.  getdents64 uses the plain
+ * name test on the entry instead, because it already knows the directory.
+ */
+static bool bst_vm_path_hidden(const char *path)
+{
+	char buf[BST_PATH_MAX];
+	size_t n, i, start = 1;
+
+	if (strncmp(path, "/sys/", 5) != 0 && strncmp(path, "/dev/", 5) != 0)
+		return false;
+
+	n = strnlen(path, sizeof(buf) - 1);
+	memcpy(buf, path, n);
+	buf[n] = '\0';
+
+	for (i = 1; i <= n; i++) {
+		char save;
+
+		if (buf[i] != '/' && buf[i] != '\0')
+			continue;
+
+		save = buf[i];
+		buf[i] = '\0';
+		if (bst_vm_name_hidden(buf + start)) {
+			buf[i] = save;
+			return true;
+		}
+		buf[i] = save;
+
+		if (!save)
+			break;
+		start = i + 1;
+	}
+
+	return false;
+}
+
 static inline bool bst_uid_trusted(void)
 {
 	uid_t uid = current_uid().val;
@@ -265,6 +451,18 @@ static noinline long bst_guard_path(const char __user *uname, syscall_fn_t orig,
 	memset(path, 0, sizeof(path));
 	if (strncpy_from_user_nofault(path, uname, sizeof(path)) < 0)
 		return orig(regs);
+
+	bst_trace_path(path);
+
+	/* L4 virtualisation artefacts.  Checked before the cheap token test
+	 * below, because none of those tokens ("bst", "ovt", "cfg", ...) ever
+	 * appears in a machine-model name. */
+	if (unlikely(bst_vm_path_hidden(path))) {
+		if (unlikely(bst_hide_log))
+			pr_info("hide: ENOENT vm %s (uid %u)\n", path,
+				current_uid().val);
+		return -ENOENT;
+	}
 
 	/* Cheap rejection first: a path that carries none of these bytes
 	 * cannot match anything in the tables.  ("prop" rather than ".propfile"
@@ -385,7 +583,8 @@ static long bst_sys_statx(const struct pt_regs *regs)
 /* getdents64                                                          */
 /* ------------------------------------------------------------------ */
 
-static bool bst_dirname_hidden(const char *name, unsigned int room)
+static bool bst_dirname_hidden(const char *name, unsigned int room,
+			       const char *dirpath)
 {
 	char tmp[BST_PATH_MAX];
 	size_t len;
@@ -401,6 +600,10 @@ static bool bst_dirname_hidden(const char *name, unsigned int room)
 
 	if (bst_name_hidden(tmp))
 		return true;
+	/* Inside sysfs/devtmpfs the machine-model names are hidden too; the
+	 * directory is known here, so no path walk is needed. */
+	if (dirpath && bst_vm_name_hidden(tmp))
+		return true;
 	/* com.bluestacks.* application packages are hidden from package
 	 * queries by the framework already; keep them out of raw listings as
 	 * well so the two views agree. */
@@ -415,7 +618,7 @@ static bool bst_dirname_hidden(const char *name, unsigned int room)
  * new length; a malformed record makes the caller fall back to the original
  * buffer rather than risk corrupting a listing.
  */
-static long bst_filter_dirents(char *buf, long len)
+static long bst_filter_dirents(char *buf, long len, const char *dirpath)
 {
 	const unsigned int hdr = offsetof(struct bst_dirent64, d_name);
 	long src = 0, dst = 0;
@@ -435,7 +638,7 @@ static long bst_filter_dirents(char *buf, long len)
 		struct bst_dirent64 *de = (struct bst_dirent64 *)(buf + src);
 		unsigned int reclen = de->d_reclen;
 
-		if (bst_dirname_hidden(de->d_name, reclen - hdr)) {
+		if (bst_dirname_hidden(de->d_name, reclen - hdr, dirpath)) {
 			src += reclen;
 			continue;
 		}
@@ -450,7 +653,7 @@ static long bst_filter_dirents(char *buf, long len)
 }
 
 static noinline long bst_guard_dirents(syscall_fn_t orig, const struct pt_regs *regs,
-				       unsigned int count)
+				       unsigned int count, const char *dirpath)
 {
 	char __user *ubuf = (char __user *)PT_REGS_PARM2(regs);
 	char *kbuf;
@@ -477,7 +680,7 @@ static noinline long bst_guard_dirents(syscall_fn_t orig, const struct pt_regs *
 		if (copy_from_user(kbuf, ubuf, ret))
 			goto out;
 
-		filtered = bst_filter_dirents(kbuf, ret);
+		filtered = bst_filter_dirents(kbuf, ret, dirpath);
 		if (filtered == ret)
 			goto out;
 
@@ -502,11 +705,37 @@ out:
 static syscall_fn_t bst_orig_getdents64;
 static long bst_sys_getdents64(const struct pt_regs *regs)
 {
+	char *dirbuf = NULL;
+	struct file *file;
+	const char *dirpath = NULL;
+	long ret;
+
 	if (likely(!bst_hide_enabled) || likely(bst_uid_trusted()))
 		return bst_orig_getdents64(regs);
 
-	return bst_guard_dirents(bst_orig_getdents64, regs,
-				 (unsigned int)PT_REGS_PARM3(regs));
+	/* The machine-model names are only stripped inside sysfs and devtmpfs,
+	 * so the directory path is resolved once here instead of being walked
+	 * for every entry.  d_path() needs the vfsmount path, hence the fget. */
+	file = fget((unsigned int)PT_REGS_SYSCALL_PARM1(regs));
+	if (file) {
+		unsigned long magic = file->f_path.mnt->mnt_sb->s_magic;
+
+		if (magic == SYSFS_MAGIC || magic == DEVTMPFS_MAGIC) {
+			dirbuf = kmalloc(PATH_MAX, GFP_KERNEL);
+			if (dirbuf) {
+				char *p = d_path(&file->f_path, dirbuf, PATH_MAX);
+
+				if (!IS_ERR(p))
+					dirpath = p;
+			}
+		}
+		fput(file);
+	}
+
+	ret = bst_guard_dirents(bst_orig_getdents64, regs,
+				(unsigned int)PT_REGS_PARM3(regs), dirpath);
+	kfree(dirbuf);
+	return ret;
 }
 
 /* ------------------------------------------------------------------ */
@@ -616,6 +845,127 @@ static void bst_fix_status(char *buf, long len)
 static DEFINE_MUTEX(bst_status_lock);
 static char bst_status_buf[4096];
 
+/* ------------------------------------------------------------------ */
+/* L4: the selinuxfs status page                                       */
+/* ------------------------------------------------------------------ */
+
+/*
+ * /sys/fs/selinux/status is not text - it is the 20 byte
+ * struct selinux_kernel_status { version, sequence, enforcing, policyload,
+ * deny_unknown } mapped read only by libselinux (selinux_status_open).  This
+ * guest's kernel is genuinely permissive, so the page reports enforcing 0
+ * while the enforce file this layer serves to application uids says "1".
+ * A detector that reads both - or that compares the mmap page against
+ * getenforce() - sees "direct syscall and libc views disagree", which is
+ * exactly the second half of the Miscellaneous Check family.  Serve a
+ * self-consistent page to application uids, on both the read and the mmap
+ * path (libselinux prefers mmap and would bypass a read-only rewrite).
+ */
+struct bst_selinux_status {
+	__u32 version;
+	__u32 sequence;
+	__u32 enforcing;
+	__u32 policyload;
+	__u32 deny_unknown;
+};
+
+static const struct bst_selinux_status bst_selinux_fake = {
+	.version = 1,
+	.sequence = 2,
+	.enforcing = 1,
+	.policyload = 1,
+	.deny_unknown = 1,
+};
+
+static bool bst_selinux_status_file(const struct file *file)
+{
+	return file && file->f_path.mnt->mnt_sb->s_magic == SELINUX_MAGIC &&
+	       !strcmp(file->f_path.dentry->d_name.name, "status");
+}
+
+static long bst_serve_selinux_status(struct file *file, char __user *ubuf,
+				     size_t count)
+{
+	loff_t pos = file->f_pos;
+
+	if (pos < 0)
+		return -EINVAL;
+	if ((size_t)pos >= sizeof(bst_selinux_fake))
+		return 0;
+	if (count > sizeof(bst_selinux_fake) - (size_t)pos)
+		count = sizeof(bst_selinux_fake) - (size_t)pos;
+	if (copy_to_user(ubuf, (const char *)&bst_selinux_fake + pos, count))
+		return -EFAULT;
+
+	file->f_pos = pos + (loff_t)count;
+	return (long)count;
+}
+
+/*
+ * The mmap form: selinux_status_open() maps the page and then polls the
+ * sequence field.  An anonymous page pre-filled with the same five words is
+ * indistinguishable to the reader.  The mapping is left writable - the
+ * original is PROT_READ, but nothing reads the protection back, and writing
+ * into it only changes the detector's own private copy.
+ */
+static long bst_mmap_selinux_status(unsigned long len)
+{
+	unsigned long size, ret;
+	void __user *page;
+
+	if (!len || len > (unsigned long)BST_PATH_MAX * 64)
+		return -EINVAL;
+
+	size = PAGE_ALIGN(len);
+	ret = vm_mmap(NULL, 0, size, PROT_READ | PROT_WRITE,
+		      MAP_PRIVATE | MAP_ANONYMOUS, 0);
+	if (IS_ERR_VALUE(ret))
+		return (long)ret;
+
+	page = (void __user *)ret;
+	if (copy_to_user(page, &bst_selinux_fake, sizeof(bst_selinux_fake))) {
+		vm_munmap(ret, size);
+		return -EFAULT;
+	}
+
+	return (long)ret;
+}
+
+static syscall_fn_t bst_orig_mmap;
+static long bst_sys_mmap(const struct pt_regs *regs)
+{
+	unsigned long len = (unsigned long)PT_REGS_PARM2(regs);
+	unsigned long off = (unsigned long)PT_REGS_PARM6(regs);
+	int flags = (int)PT_REGS_SYSCALL_PARM4(regs);
+	struct file *file;
+
+	if (likely(!bst_hide_enabled) || likely(bst_uid_trusted()))
+		return bst_orig_mmap(regs);
+
+	/* MAP_FIXED callers want a particular address; do not second guess. */
+	if (off || (flags & MAP_FIXED))
+		return bst_orig_mmap(regs);
+
+	file = fget((unsigned int)(int)PT_REGS_PARM5(regs));
+	if (!file)
+		return bst_orig_mmap(regs);
+
+	if (bst_selinux_status_file(file)) {
+		long ret;
+
+		if (unlikely(bst_trace_enabled))
+			pr_info("trace: app mmap selinux status (uid %u)\n",
+				current_uid().val);
+		ret = bst_mmap_selinux_status(len);
+		fput(file);
+		if (ret != -EINVAL)
+			return ret;
+	}
+
+	fput(file);
+	return bst_orig_mmap(regs);
+}
+
 static syscall_fn_t bst_orig_read;
 static DEFINE_MUTEX(bst_mount_lock);
 static long bst_serve_mounts(struct file *file, char __user *ubuf, size_t count);
@@ -636,6 +986,16 @@ static long bst_sys_read(const struct pt_regs *regs)
 	rcu_read_unlock();
 	if (!file)
 		return bst_orig_read(regs);
+
+	/* L4: the binary status page, before the procfs branch - selinuxfs. */
+	if (bst_selinux_status_file(file)) {
+		if (!bst_uid_trusted()) {
+			ret = bst_serve_selinux_status(file, ubuf, count);
+			fput(file);
+			return ret;
+		}
+		goto plain;
+	}
 
 	if (file->f_path.mnt->mnt_sb->s_magic != PROC_SUPER_MAGIC)
 		goto plain;
@@ -924,6 +1284,10 @@ void __init ksu_bst_hide_init(void)
 	 * its verdict.  Same table, same mechanism, no extra footprint. */
 	ksu_syscall_table_hook(__NR_kill, bst_sys_kill, &bst_orig_kill);
 	ksu_syscall_table_hook(__NR_tgkill, bst_sys_tgkill, &bst_orig_tgkill);
+	/* mmap only adjudicates the selinuxfs status page for application
+	 * uids; every other mapping (and every other uid) passes straight
+	 * through to the original entry. */
+	ksu_syscall_table_hook(__NR_mmap, bst_sys_mmap, &bst_orig_mmap);
 
 	bst_build_cpuinfo();
 	bst_rewrite_utsname();
