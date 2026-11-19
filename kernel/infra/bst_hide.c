@@ -118,6 +118,11 @@ module_param_named(bst_hide_log, bst_hide_log, bool, 0644);
 static bool bst_vm_hiding_enabled __read_mostly = true;
 module_param_named(bst_vm, bst_vm_hiding_enabled, bool, 0644);
 
+/* Separate switch for the BlueStacks download-directory files, so that the
+ * machine-model hiding can be bisected without also reopening .modelProp. */
+static bool bst_bl_hiding_enabled __read_mostly = true;
+module_param_named(bst_bl, bst_bl_hiding_enabled, bool, 0644);
+
 static bool bst_selinux_fake_enabled __read_mostly = true;
 module_param_named(bst_selinux, bst_selinux_fake_enabled, bool, 0644);
 
@@ -505,7 +510,7 @@ static noinline long bst_guard_path(const char __user *uname, syscall_fn_t orig,
 	/* L4 virtualisation artefacts.  Checked before the cheap token test
 	 * below, because none of those tokens ("bst", "ovt", "cfg", ...) ever
 	 * appears in a machine-model name. */
-	if (bst_vm_hiding_enabled && bst_bluestacks_file(bst_basename(path))) {
+	if (bst_bl_hiding_enabled && bst_bluestacks_file(bst_basename(path))) {
 		if (unlikely(bst_hide_log))
 			pr_info("hide: ENOENT bluestacks %s (uid %u)\n", path,
 				current_uid().val);
@@ -655,7 +660,7 @@ static bool bst_dirname_hidden(const char *name, unsigned int room,
 
 	if (bst_name_hidden(tmp))
 		return true;
-	if (bst_vm_hiding_enabled && bst_bluestacks_file(tmp))
+	if (bst_bl_hiding_enabled && bst_bluestacks_file(tmp))
 		return true;
 	/* Inside sysfs/devtmpfs the machine-model names are hidden too; the
 	 * directory is known here, so no path walk is needed. */
@@ -1461,8 +1466,8 @@ static long bst_sys_prctl(const struct pt_regs *regs)
 static int bst_cfg_show(struct seq_file *m, void *v)
 {
 	seq_printf(m,
-		   "hide %d\nvm %d\nselinux %d\ntrace %d\nlog %d\nkillguard %d\nhits %d\n",
-		   bst_hide_enabled, bst_vm_hiding_enabled,
+		   "hide %d\nvm %d\nbl %d\nselinux %d\ntrace %d\nlog %d\nkillguard %d\nhits %d\n",
+		   bst_hide_enabled, bst_vm_hiding_enabled, bst_bl_hiding_enabled,
 		   bst_selinux_fake_enabled, bst_trace_enabled,
 		   bst_hide_log, bst_killguard_enabled,
 		   atomic_read(&bst_trace_hits));
@@ -1512,6 +1517,8 @@ static ssize_t bst_cfg_write(struct file *file, const char __user *ubuf,
 		bst_hide_enabled = val;
 	else if (!strcmp(key, "vm"))
 		bst_vm_hiding_enabled = val;
+	else if (!strcmp(key, "bl"))
+		bst_bl_hiding_enabled = val;
 	else if (!strcmp(key, "selinux"))
 		bst_selinux_fake_enabled = val;
 	else if (!strcmp(key, "trace")) {
