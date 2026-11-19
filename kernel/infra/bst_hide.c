@@ -54,6 +54,8 @@
 #include <linux/dcache.h>
 #include <linux/mm.h>
 #include <linux/limits.h>
+#include <linux/proc_fs.h>
+#include <linux/seq_file.h>
 #include <asm/unistd.h>
 
 #include "arch.h"
@@ -107,6 +109,18 @@ module_param_named(bst_hide, bst_hide_enabled, bool, 0644);
 static bool bst_hide_log __read_mostly;
 module_param_named(bst_hide_log, bst_hide_log, bool, 0644);
 
+/* Two of the L4 layers are speculative: they hide or fabricate things a
+ * detector may or may not look at, and a wrong guess can be worse than the
+ * leak it covers (a name that is listed but will not stat is evidence of a
+ * hide).  Both can therefore be switched at run time through /proc/ovtcfg,
+ * which makes them A/B testable against the real detector instead of being
+ * decided by argument. */
+static bool bst_vm_hiding_enabled __read_mostly = true;
+module_param_named(bst_vm, bst_vm_hiding_enabled, bool, 0644);
+
+static bool bst_selinux_fake_enabled __read_mostly = true;
+module_param_named(bst_selinux, bst_selinux_fake_enabled, bool, 0644);
+
 /*
  * Diagnostic probe counter.  A detector decides what to report from a modest
  * number of kernel surfaces; finding out which ones a given build actually
@@ -118,7 +132,7 @@ module_param_named(bst_hide_log, bst_hide_log, bool, 0644);
  * capped at 2000 lines so a long uptime cannot flood the ring buffer.
  */
 #define BST_TRACE_MAX 2000
-static bool bst_trace_enabled __read_mostly = true;
+static bool bst_trace_enabled __read_mostly;
 module_param_named(bst_trace, bst_trace_enabled, bool, 0644);
 static atomic_t bst_trace_hits = ATOMIC_INIT(0);
 
@@ -399,6 +413,9 @@ static bool bst_vm_path_hidden(const char *path)
 	char buf[BST_PATH_MAX];
 	size_t n, i, start = 1;
 
+	if (likely(!bst_vm_hiding_enabled))
+		return false;
+
 	if (strncmp(path, "/sys/", 5) != 0 && strncmp(path, "/dev/", 5) != 0)
 		return false;
 
@@ -602,7 +619,7 @@ static bool bst_dirname_hidden(const char *name, unsigned int room,
 		return true;
 	/* Inside sysfs/devtmpfs the machine-model names are hidden too; the
 	 * directory is known here, so no path walk is needed. */
-	if (dirpath && bst_vm_name_hidden(tmp))
+	if (bst_vm_hiding_enabled && dirpath && bst_vm_name_hidden(tmp))
 		return true;
 	/* com.bluestacks.* application packages are hidden from package
 	 * queries by the framework already; keep them out of raw listings as
@@ -719,13 +736,19 @@ static long bst_sys_getdents64(const struct pt_regs *regs)
 	file = fget((unsigned int)PT_REGS_SYSCALL_PARM1(regs));
 	if (file) {
 		unsigned long magic = file->f_path.mnt->mnt_sb->s_magic;
+		bool kernel_fs = magic == SYSFS_MAGIC || magic == DEVTMPFS_MAGIC;
 
-		if (magic == SYSFS_MAGIC || magic == DEVTMPFS_MAGIC) {
+		/* Android mounts a tmpfs over /dev, so the node names a
+		 * devtmpfs back end would have filtered live in a tmpfs here.
+		 * Only /dev itself is treated that way: the rest of the
+		 * system's tmpfs directories have nothing of ours in them. */
+		if (kernel_fs || magic == TMPFS_MAGIC) {
 			dirbuf = kmalloc(PATH_MAX, GFP_KERNEL);
 			if (dirbuf) {
 				char *p = d_path(&file->f_path, dirbuf, PATH_MAX);
 
-				if (!IS_ERR(p))
+				if (!IS_ERR(p) &&
+				    (kernel_fs || !strcmp(p, "/dev")))
 					dirpath = p;
 			}
 		}
@@ -1251,6 +1274,78 @@ static long bst_sys_tgkill(const struct pt_regs *regs)
 	return bst_orig_tgkill(regs);
 }
 
+
+/* ------------------------------------------------------------------ */
+/* run-time switches: /proc/ovtcfg                                     */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Reading and writing this file is root only.  It exists so the layers that
+ * are guesses (machine-model hiding, the selinux status page) can be turned
+ * off and on again while a detector is running, which is the only way to
+ * tell a layer that helps from one that merely looks convincing.
+ */
+static int bst_cfg_show(struct seq_file *m, void *v)
+{
+	seq_printf(m,
+		   "hide %d\nvm %d\nselinux %d\ntrace %d\nlog %d\nkillguard %d\nhits %d\n",
+		   bst_hide_enabled, bst_vm_hiding_enabled,
+		   bst_selinux_fake_enabled, bst_trace_enabled,
+		   bst_hide_log, bst_killguard_enabled,
+		   atomic_read(&bst_trace_hits));
+	return 0;
+}
+
+static int bst_cfg_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, bst_cfg_show, NULL);
+}
+
+static ssize_t bst_cfg_write(struct file *file, const char __user *ubuf,
+			     size_t count, loff_t *ppos)
+{
+	char buf[64];
+	char key[16];
+	int val;
+
+	if (current_uid().val != 0)
+		return -EPERM;
+	if (!count || count >= sizeof(buf))
+		return -EINVAL;
+	if (copy_from_user(buf, ubuf, count))
+		return -EFAULT;
+	buf[count] = '\0';
+	if (sscanf(buf, "%15s %d", key, &val) != 2)
+		return -EINVAL;
+
+	if (!strcmp(key, "hide"))
+		bst_hide_enabled = val;
+	else if (!strcmp(key, "vm"))
+		bst_vm_hiding_enabled = val;
+	else if (!strcmp(key, "selinux"))
+		bst_selinux_fake_enabled = val;
+	else if (!strcmp(key, "trace")) {
+		bst_trace_enabled = val;
+		if (val)
+			atomic_set(&bst_trace_hits, 0);
+	} else if (!strcmp(key, "log"))
+		bst_hide_log = val;
+	else if (!strcmp(key, "killguard"))
+		bst_killguard_enabled = val;
+	else
+		return -EINVAL;
+
+	return count;
+}
+
+static const struct proc_ops bst_cfg_procs = {
+	.proc_open = bst_cfg_open,
+	.proc_read = seq_read,
+	.proc_write = bst_cfg_write,
+	.proc_lseek = seq_lseek,
+	.proc_release = single_release,
+};
+
 /* ------------------------------------------------------------------ */
 /* install                                                             */
 /* ------------------------------------------------------------------ */
@@ -1291,6 +1386,9 @@ void __init ksu_bst_hide_init(void)
 
 	bst_build_cpuinfo();
 	bst_rewrite_utsname();
+
+	if (!proc_create("ovtcfg", 0600, NULL, &bst_cfg_procs))
+		pr_warn("bst_hide: /proc/ovtcfg unavailable\n");
 
 	pr_info("bst_hide: layer 2 path adjudication + proc text + kill guard installed\n");
 }
