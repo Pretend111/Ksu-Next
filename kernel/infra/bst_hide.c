@@ -1361,7 +1361,7 @@ static long bst_sys_tgkill(const struct pt_regs *regs)
 /*
  * prctl(PR_GET_SECCOMP) reports 0 on this guest for every process: the image
  * runs SELinux disabled, so zygote never installs a seccomp filter and ART
- * says so out loud ("seccomp disabled by setenforce 0").  /proc/*\/status is
+ * says so out loud ("seccomp disabled by setenforce 0").  /proc/PID/status is
  * rewritten to claim a filter, and this closes the other door to the same
  * fact.
  */
