@@ -294,6 +294,34 @@ static bool bst_name_hidden(const char *name)
 	return false;
 }
 
+
+/* BlueStacks writes its per-package model table and a handful of tuning
+ * files into /data/downloads/.tmp, mode 0644, so any application can read
+ * them.  A stock device has none of them; the detector opens .modelProp in a
+ * tight retry loop right before it decides to kill itself. */
+static const char *const bst_bluestacks_files[] = {
+	".modelProp",
+	".bstMemorySizeApps",
+	".bstXcpuApps",
+	".bstXperfModeApps",
+	".bstZeroMappedPageApps",
+};
+
+static bool bst_bluestacks_file(const char *name)
+{
+	size_t i;
+
+	if (!name || !name[0])
+		return false;
+
+	for (i = 0; i < ARRAY_SIZE(bst_bluestacks_files); i++) {
+		if (!strcmp(name, bst_bluestacks_files[i]))
+			return true;
+	}
+
+	return false;
+}
+
 static bool bst_path_hidden(const char *path)
 {
 	size_t i, plen;
@@ -477,6 +505,13 @@ static noinline long bst_guard_path(const char __user *uname, syscall_fn_t orig,
 	/* L4 virtualisation artefacts.  Checked before the cheap token test
 	 * below, because none of those tokens ("bst", "ovt", "cfg", ...) ever
 	 * appears in a machine-model name. */
+	if (bst_vm_hiding_enabled && bst_bluestacks_file(bst_basename(path))) {
+		if (unlikely(bst_hide_log))
+			pr_info("hide: ENOENT bluestacks %s (uid %u)\n", path,
+				current_uid().val);
+		return -ENOENT;
+	}
+
 	if (unlikely(bst_vm_path_hidden(path))) {
 		if (unlikely(bst_hide_log))
 			pr_info("hide: ENOENT vm %s (uid %u)\n", path,
@@ -619,6 +654,8 @@ static bool bst_dirname_hidden(const char *name, unsigned int room,
 	tmp[len] = '\0';
 
 	if (bst_name_hidden(tmp))
+		return true;
+	if (bst_vm_hiding_enabled && bst_bluestacks_file(tmp))
 		return true;
 	/* Inside sysfs/devtmpfs the machine-model names are hidden too; the
 	 * directory is known here, so no path walk is needed. */
