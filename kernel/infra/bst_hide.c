@@ -1279,8 +1279,8 @@ static void __init bst_rewrite_utsname(void)
  * ring, so the paths that led to the decision are in dmesg instead of being
  * guessed at.  Entries are only recorded for application uids.
  */
-#define BST_RING_MAX	256
-#define BST_RING_PATH	56
+#define BST_RING_MAX	1024
+#define BST_RING_PATH	80
 
 struct bst_ring_ent {
 	u32 tid;
@@ -1295,16 +1295,43 @@ static struct bst_ring_ent bst_ring[BST_RING_MAX];
 static unsigned int bst_ring_pos;
 static DEFINE_SPINLOCK(bst_ring_lock);
 
+/* Paths that every process touches thousands of times: recording them would
+ * bury the ones that say something about the environment. */
+static bool bst_ring_boring(const char *p)
+{
+	if (!strncmp(p, "/proc/self", 10))
+		return true;
+	if (!strncmp(p, "/proc/", 6) && p[6] >= '0' && p[6] <= '9')
+		return true;
+	if (!strncmp(p, "/system/lib", 11) || !strncmp(p, "/vendor/lib", 11) ||
+	    !strncmp(p, "/system/framework", 17) || !strncmp(p, "/apex/", 6) ||
+	    !strncmp(p, "/data/dalvik-cache", 18) || !strncmp(p, "/data/app/", 10) ||
+	    !strncmp(p, "/dev/__properties__", 19) ||
+	    !strncmp(p, "/system/bin/", 12) || !strncmp(p, "/dev/ashmem", 11) ||
+	    !strncmp(p, "/dev/binder", 11) || !strncmp(p, "/dev/kgsl", 9) ||
+	    !strncmp(p, "/sys/kernel/debug", 17))
+		return true;
+	return false;
+}
+
 static void bst_ring_add(u16 nr, s64 a0, s64 a1, const char *path)
 {
 	unsigned long flags;
 	struct bst_ring_ent *e;
+	struct bst_ring_ent *last;
 	size_t n = 0;
 
 	if (!bst_trace_enabled)
 		return;
+	if (path && bst_ring_boring(path))
+		return;
 
 	spin_lock_irqsave(&bst_ring_lock, flags);
+	last = &bst_ring[bst_ring_pos ? bst_ring_pos - 1 : BST_RING_MAX - 1];
+	if (path && last->nr && !strcmp(last->path, path)) {
+		spin_unlock_irqrestore(&bst_ring_lock, flags);
+		return;
+	}
 	e = &bst_ring[bst_ring_pos];
 	bst_ring_pos = (bst_ring_pos + 1) % BST_RING_MAX;
 	e->tid = current->pid;
@@ -1330,10 +1357,10 @@ static void bst_ring_dump(void)
 	unsigned int i, idx;
 
 	spin_lock_irqsave(&bst_ring_lock, flags);
-	for (i = 0; i < 128; i++) {
+	for (i = 0; i < BST_RING_MAX; i++) {
 		const struct bst_ring_ent *e;
 
-		idx = (bst_ring_pos + BST_RING_MAX - 128 + i) % BST_RING_MAX;
+		idx = (bst_ring_pos + i) % BST_RING_MAX;
 		e = &bst_ring[idx];
 		if (!e->nr)
 			continue;
@@ -1370,7 +1397,7 @@ static noinline bool bst_killguard_drop(int sig, pid_t pid)
 	if (hits <= 8 || (hits % 64) == 0)
 		pr_info("bst_hide: dropped self SIGKILL from %s (uid %u, hit %d)\n",
 			current->comm, current_uid().val, hits);
-	if (hits <= 4)
+	if (hits <= 1)
 		bst_ring_dump();
 	return true;
 }
@@ -1467,6 +1494,15 @@ static ssize_t bst_cfg_write(struct file *file, const char __user *ubuf,
 		return -EINVAL;
 	if (!strcmp(key, "dump")) {
 		bst_ring_dump();
+		return count;
+	}
+	if (!strcmp(key, "clearr")) {
+		unsigned long flags;
+
+		spin_lock_irqsave(&bst_ring_lock, flags);
+		memset(bst_ring, 0, sizeof(bst_ring));
+		bst_ring_pos = 0;
+		spin_unlock_irqrestore(&bst_ring_lock, flags);
 		return count;
 	}
 	if (rc != 2)
