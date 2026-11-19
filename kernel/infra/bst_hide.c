@@ -1293,10 +1293,10 @@ static void bst_ring_dump(void)
 	unsigned int i, idx;
 
 	spin_lock_irqsave(&bst_ring_lock, flags);
-	for (i = 0; i < 64; i++) {
+	for (i = 0; i < 128; i++) {
 		const struct bst_ring_ent *e;
 
-		idx = (bst_ring_pos + BST_RING_MAX - 64 + i) % BST_RING_MAX;
+		idx = (bst_ring_pos + BST_RING_MAX - 128 + i) % BST_RING_MAX;
 		e = &bst_ring[idx];
 		if (!e->nr)
 			continue;
@@ -1416,6 +1416,7 @@ static ssize_t bst_cfg_write(struct file *file, const char __user *ubuf,
 	char buf[64];
 	char key[16];
 	int val;
+	int rc;
 
 	if (current_uid().val != 0)
 		return -EPERM;
@@ -1424,7 +1425,14 @@ static ssize_t bst_cfg_write(struct file *file, const char __user *ubuf,
 	if (copy_from_user(buf, ubuf, count))
 		return -EFAULT;
 	buf[count] = '\0';
-	if (sscanf(buf, "%15s %d", key, &val) != 2)
+	rc = sscanf(buf, "%15s %d", key, &val);
+	if (rc < 1)
+		return -EINVAL;
+	if (!strcmp(key, "dump")) {
+		bst_ring_dump();
+		return count;
+	}
+	if (rc != 2)
 		return -EINVAL;
 
 	if (!strcmp(key, "hide"))
