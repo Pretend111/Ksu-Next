@@ -452,6 +452,8 @@ static inline bool bst_uid_trusted(void)
 	return uid < BST_TRUSTED_UID_MAX;
 }
 
+static void bst_ring_add(u16 nr, s64 a0, s64 a1, const char *path);
+
 /*
  * Shared front half for the path-taking syscalls: @uname is the user pointer
  * to the pathname, @orig the entry we replaced.  Returns the original
@@ -470,6 +472,7 @@ static noinline long bst_guard_path(const char __user *uname, syscall_fn_t orig,
 		return orig(regs);
 
 	bst_trace_path(path);
+	bst_ring_add(1, 0, 0, path);
 
 	/* L4 virtualisation artefacts.  Checked before the cheap token test
 	 * below, because none of those tokens ("bst", "ovt", "cfg", ...) ever
@@ -1227,6 +1230,83 @@ static void __init bst_rewrite_utsname(void)
  * detector stores and re-uses, or pid <= 0, the killpg(2) form aimed at its
  * own group).  init, system_server, HALs, and every system uid are untouched.
  */
+
+/* ------------------------------------------------------------------ */
+/* guard forensics: the last few paths an app process touched          */
+/* ------------------------------------------------------------------ */
+
+/*
+ * The detector decides to SIGKILL itself about fifteen seconds in, on this
+ * guest, whatever the mask is doing - the masking layers are not what it
+ * dislikes.  When the guard drops that signal it dumps the tail of this
+ * ring, so the paths that led to the decision are in dmesg instead of being
+ * guessed at.  Entries are only recorded for application uids.
+ */
+#define BST_RING_MAX	256
+#define BST_RING_PATH	56
+
+struct bst_ring_ent {
+	u32 tid;
+	u16 nr;
+	u16 len;
+	s64 a0;
+	s64 a1;
+	char path[BST_RING_PATH];
+};
+
+static struct bst_ring_ent bst_ring[BST_RING_MAX];
+static unsigned int bst_ring_pos;
+static DEFINE_SPINLOCK(bst_ring_lock);
+
+static void bst_ring_add(u16 nr, s64 a0, s64 a1, const char *path)
+{
+	unsigned long flags;
+	struct bst_ring_ent *e;
+	size_t n = 0;
+
+	if (!bst_trace_enabled)
+		return;
+
+	spin_lock_irqsave(&bst_ring_lock, flags);
+	e = &bst_ring[bst_ring_pos];
+	bst_ring_pos = (bst_ring_pos + 1) % BST_RING_MAX;
+	e->tid = current->pid;
+	e->nr = nr;
+	e->a0 = a0;
+	e->a1 = a1;
+	if (path) {
+		n = strlen(path);
+		if (n >= BST_RING_PATH) {
+			path += n - (BST_RING_PATH - 1);
+			n = BST_RING_PATH - 1;
+		}
+		memcpy(e->path, path, n);
+	}
+	e->path[n] = '\0';
+	e->len = (u16)n;
+	spin_unlock_irqrestore(&bst_ring_lock, flags);
+}
+
+static void bst_ring_dump(void)
+{
+	unsigned long flags;
+	unsigned int i, idx;
+
+	spin_lock_irqsave(&bst_ring_lock, flags);
+	for (i = 0; i < 64; i++) {
+		const struct bst_ring_ent *e;
+
+		idx = (bst_ring_pos + BST_RING_MAX - 64 + i) % BST_RING_MAX;
+		e = &bst_ring[idx];
+		if (!e->nr)
+			continue;
+		pr_info("guard-dump: tid %u nr %u a0 %lld a1 %lld %s\n",
+			e->tid, e->nr, (long long)e->a0, (long long)e->a1,
+			e->path);
+	}
+	spin_unlock_irqrestore(&bst_ring_lock, flags);
+}
+
 static bool bst_killguard_enabled __read_mostly = true;
 module_param_named(bst_killguard, bst_killguard_enabled, bool, 0644);
 
@@ -1247,10 +1327,14 @@ static noinline bool bst_killguard_drop(int sig, pid_t pid)
 	    likely(bst_uid_trusted()) || !bst_killguard_self(pid))
 		return false;
 
+	bst_ring_add(__NR_kill, (s64)pid, (s64)sig, NULL);
+
 	hits = atomic_inc_return(&bst_killguard_hits);
 	if (hits <= 8 || (hits % 64) == 0)
 		pr_info("bst_hide: dropped self SIGKILL from %s (uid %u, hit %d)\n",
 			current->comm, current_uid().val, hits);
+	if (hits <= 4)
+		bst_ring_dump();
 	return true;
 }
 
@@ -1272,6 +1356,31 @@ static long bst_sys_tgkill(const struct pt_regs *regs)
 		return 0;
 
 	return bst_orig_tgkill(regs);
+}
+
+/*
+ * prctl(PR_GET_SECCOMP) reports 0 on this guest for every process: the image
+ * runs SELinux disabled, so zygote never installs a seccomp filter and ART
+ * says so out loud ("seccomp disabled by setenforce 0").  /proc/*\/status is
+ * rewritten to claim a filter, and this closes the other door to the same
+ * fact.
+ */
+#define BST_PR_GET_SECCOMP	21
+#define BST_SECCOMP_FILTER	2
+
+static syscall_fn_t bst_orig_prctl;
+
+static long bst_sys_prctl(const struct pt_regs *regs)
+{
+	if (likely(!bst_hide_enabled) || likely(bst_uid_trusted()))
+		return bst_orig_prctl(regs);
+
+	if ((int)PT_REGS_SYSCALL_PARM1(regs) == BST_PR_GET_SECCOMP) {
+		bst_ring_add(__NR_prctl, BST_PR_GET_SECCOMP, 0, NULL);
+		return BST_SECCOMP_FILTER;
+	}
+
+	return bst_orig_prctl(regs);
 }
 
 
@@ -1379,6 +1488,7 @@ void __init ksu_bst_hide_init(void)
 	 * its verdict.  Same table, same mechanism, no extra footprint. */
 	ksu_syscall_table_hook(__NR_kill, bst_sys_kill, &bst_orig_kill);
 	ksu_syscall_table_hook(__NR_tgkill, bst_sys_tgkill, &bst_orig_tgkill);
+	ksu_syscall_table_hook(__NR_prctl, bst_sys_prctl, &bst_orig_prctl);
 	/* mmap only adjudicates the selinuxfs status page for application
 	 * uids; every other mapping (and every other uid) passes straight
 	 * through to the original entry. */
